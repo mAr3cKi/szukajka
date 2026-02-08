@@ -32,19 +32,26 @@ def search_files():
     try:
         files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
         progress["maximum"] = len(files)
-        found_lines = 0
+        found_lines = []
+        seen_lines = set()
+
+        for i, filename in enumerate(files):
+            try:
+                with open(os.path.join(input_dir, filename), "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if search_phrase in line:
+                            line_stripped = line.strip()
+                            if line_stripped not in seen_lines:
+                                seen_lines.add(line_stripped)
+                                found_lines.append(line)
+            except: continue
+            progress["value"] = i + 1
+            root.update_idletasks()
+
         with open(output_file, "w", encoding="utf-8") as out:
-            for i, filename in enumerate(files):
-                try:
-                    with open(os.path.join(input_dir, filename), "r", encoding="utf-8", errors="ignore") as f:
-                        for line in f:
-                            if search_phrase in line:
-                                out.write(line)
-                                found_lines += 1
-                except: continue
-                progress["value"] = i + 1
-                root.update_idletasks()
-        messagebox.showinfo("MARECKI SYSTEM", f"ZAKOŃCZONO.\nZnaleziono: {found_lines} linii.\nZapisano w: {output_file}")
+            out.writelines(found_lines)
+
+        messagebox.showinfo("MARECKI SYSTEM", f"ZAKOŃCZONO.\nZnaleziono: {len(found_lines)} unikalnych linii.\nZapisano w: {output_file}")
     except Exception as e: messagebox.showerror("FATAL ERROR", str(e))
 
 root = tk.Tk()
@@ -73,3 +80,4 @@ start_btn = tk.Button(frame, text="URUCHOM I ZAPISZ", command=search_files, bg="
 start_btn.pack(side="bottom", fill="x")
 
 root.mainloop()
+
