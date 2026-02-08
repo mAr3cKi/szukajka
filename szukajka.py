@@ -80,4 +80,3 @@ start_btn = tk.Button(frame, text="URUCHOM I ZAPISZ", command=search_files, bg="
 start_btn.pack(side="bottom", fill="x")
 
 root.mainloop()
-
