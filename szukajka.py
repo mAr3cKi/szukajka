@@ -1,6 +1,10 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 import os
+import time
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from tkinter import ttk
+import threading
 
 print(r"""
 ╔═══════════════════════════════════════════════════════════╗
@@ -12,71 +16,686 @@ print(r"""
 ║   ██║ ╚═╝ ██║██║  ██║██║  ██║███████╗╚██████╗██║  ██╗██║ ║
 ║   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝ ║
 ║                                                           ║
-║              SEARCH ENGINE SYSTEM  v1.0                   ║
-║              ════════════════════════════                 ║
-║                     [  ACTIVE  ]                          ║
+║         SZUKAJKA PREMIUM v2.1 - Ultra Edition             ║
+║         Bufor 8MB • Obsługuje pliki 200GB+                ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
-
-        >> INITIALIZING SEARCH INTERFACE
 """)
 
-def search_files():
-    input_dir = folder_path_entry.get()
-    search_phrase = entry_phrase.get()
-    if not input_dir or not os.path.exists(input_dir):
-        messagebox.showerror("BŁĄD", "Wybierz folder źródłowy!")
-        return
-    output_file = filedialog.asksaveasfilename(defaultextension=".txt", title="Gdzie zapisać wyniki?")
-    if not output_file: return
-    try:
-        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
-        progress["maximum"] = len(files)
-        found_lines = []
+class Szukajka:
+    def __init__(self):
+        self.stop_flag = False
+        self.BUFFER_SIZE = 8 * 1024 * 1024  # 8MB
+        
+    def format_size(self, size_bytes):
+        """Formatowanie rozmiaru pliku"""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} PB"
+    
+    def format_time(self, seconds):
+        """Formatowanie czasu"""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            return f"{int(seconds//60)}m {int(seconds%60)}s"
+        else:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            return f"{hours}h {minutes}m"
+    
+    def get_unique_filename(self, directory, base_name="wyniki_tb7_pl"):
+        """Generuje unikalną nazwę pliku"""
+        counter = 1
+        while True:
+            if counter == 1:
+                filename = f"{base_name}.txt"
+            else:
+                filename = f"{base_name}_{counter}.txt"
+            
+            full_path = os.path.join(directory, filename)
+            if not os.path.exists(full_path):
+                return full_path
+            counter += 1
+    
+    def search_in_files(self, file_paths, search_phrase, progress_callback, save_folder=None):
+        """Przeszukuje pliki z buforowaniem 8MB"""
+        if not file_paths:
+            return None, 0
+        
+        # Użyj custom folderu zapisu lub domyślnego
+        if save_folder:
+            output_dir = save_folder
+        else:
+            output_dir = os.path.dirname(file_paths[0])
+        
+        output_file = self.get_unique_filename(output_dir)
+        
+        total_size = sum(os.path.getsize(f) for f in file_paths)
+        processed_size = 0
+        found_count = 0
+        start_time = time.time()
         seen_lines = set()
+        
+        search_lower = search_phrase.lower()
+        
+        with open(output_file, 'w', encoding='utf-8', errors='ignore') as out:
+            for file_path in file_paths:
+                if self.stop_flag:
+                    break
+                
+                file_size = os.path.getsize(file_path)
+                
+                with open(file_path, 'r', encoding='utf-8', errors='ignore', buffering=self.BUFFER_SIZE) as f:
+                    buffer = ""
+                    while True:
+                        if self.stop_flag:
+                            break
+                        
+                        chunk = f.read(self.BUFFER_SIZE)
+                        if not chunk:
+                            break
+                        
+                        buffer += chunk
+                        lines = buffer.split('\n')
+                        buffer = lines[-1]
+                        
+                        for line in lines[:-1]:
+                            if search_lower in line.lower():
+                                line_stripped = line.strip()
+                                if line_stripped and line_stripped not in seen_lines:
+                                    seen_lines.add(line_stripped)
+                                    out.write(line_stripped + '\n')
+                                    found_count += 1
+                        
+                        processed_size += len(chunk.encode('utf-8'))
+                        
+                        elapsed = time.time() - start_time
+                        if elapsed > 0:
+                            speed = processed_size / elapsed
+                            remaining = total_size - processed_size
+                            eta = remaining / speed if speed > 0 else 0
+                        else:
+                            speed = 0
+                            eta = 0
+                        
+                        progress_callback(
+                            processed_size,
+                            total_size,
+                            found_count,
+                            speed,
+                            eta
+                        )
+                    
+                    if buffer and search_lower in buffer.lower():
+                        line_stripped = buffer.strip()
+                        if line_stripped and line_stripped not in seen_lines:
+                            seen_lines.add(line_stripped)
+                            out.write(line_stripped + '\n')
+                            found_count += 1
+        
+        if self.stop_flag:
+            return None, 0
+        
+        return output_file, found_count
 
-        for i, filename in enumerate(files):
-            try:
-                with open(os.path.join(input_dir, filename), "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        if search_phrase in line:
-                            line_stripped = line.strip()
-                            if line_stripped not in seen_lines:
-                                seen_lines.add(line_stripped)
-                                found_lines.append(line)
-            except: continue
-            progress["value"] = i + 1
-            root.update_idletasks()
 
-        with open(output_file, "w", encoding="utf-8") as out:
-            out.writelines(found_lines)
+class RoundedButton(tk.Canvas):
+    """Zaokrąglony przycisk z gradientem"""
+    def __init__(self, parent, text, command, bg_color, fg_color, width=200, height=50):
+        super().__init__(parent, width=width, height=height, bg=parent['bg'], highlightthickness=0)
+        
+        self.command = command
+        self.bg_color = bg_color
+        self.fg_color = fg_color
+        self.text = text
+        
+        self.draw_button()
+        self.bind("<Button-1>", lambda e: self.on_click())
+        self.bind("<Enter>", lambda e: self.on_hover())
+        self.bind("<Leave>", lambda e: self.on_leave())
+    
+    def draw_button(self, hover=False):
+        self.delete("all")
+        
+        color = self.lighten_color(self.bg_color) if hover else self.bg_color
+        
+        # Zaokrąglony prostokąt
+        self.create_rounded_rect(5, 5, self.winfo_reqwidth()-5, self.winfo_reqheight()-5, 
+                                 radius=15, fill=color, outline="")
+        
+        # Tekst
+        self.create_text(self.winfo_reqwidth()//2, self.winfo_reqheight()//2,
+                        text=self.text, fill=self.fg_color, 
+                        font=("Arial", 12, "bold"))
+    
+    def create_rounded_rect(self, x1, y1, x2, y2, radius=25, **kwargs):
+        points = [x1+radius, y1,
+                  x1+radius, y1,
+                  x2-radius, y1,
+                  x2-radius, y1,
+                  x2, y1,
+                  x2, y1+radius,
+                  x2, y1+radius,
+                  x2, y2-radius,
+                  x2, y2-radius,
+                  x2, y2,
+                  x2-radius, y2,
+                  x2-radius, y2,
+                  x1+radius, y2,
+                  x1+radius, y2,
+                  x1, y2,
+                  x1, y2-radius,
+                  x1, y2-radius,
+                  x1, y1+radius,
+                  x1, y1+radius,
+                  x1, y1]
+        return self.create_polygon(points, smooth=True, **kwargs)
+    
+    def lighten_color(self, color):
+        """Rozjaśnia kolor dla efektu hover"""
+        if color == "#00ff00":
+            return "#33ff33"
+        elif color == "#ff3333":
+            return "#ff5555"
+        return color
+    
+    def on_hover(self):
+        self.draw_button(hover=True)
+        self.config(cursor="hand2")
+    
+    def on_leave(self):
+        self.draw_button(hover=False)
+        self.config(cursor="")
+    
+    def on_click(self):
+        if self.command:
+            self.command()
 
-        messagebox.showinfo("MARECKI SYSTEM", f"ZAKOŃCZONO.\nZnaleziono: {len(found_lines)} unikalnych linii.\nZapisano w: {output_file}")
-    except Exception as e: messagebox.showerror("FATAL ERROR", str(e))
 
-root = tk.Tk()
-root.title("MARECKI - SEARCH ENGINE")
-root.geometry("600x420")
-root.configure(bg="#000000")
-root.resizable(False, False)
+class ModernEntry(tk.Frame):
+    """Nowoczesne pole tekstowe z placeholderem"""
+    def __init__(self, parent, placeholder="", **kwargs):
+        super().__init__(parent, bg="#0f0f0f")
+        
+        self.entry = tk.Entry(
+            self,
+            font=("Arial", 11),
+            bg="#1a1a1a",
+            fg="#00ff00",
+            insertbackground="#00ff00",
+            bd=0,
+            relief="flat",
+            **kwargs
+        )
+        self.entry.pack(fill="both", expand=True, padx=2, pady=2)
+        
+        self.placeholder = placeholder
+        self.placeholder_active = False
+        
+        if placeholder:
+            self.show_placeholder()
+            self.entry.bind("<FocusIn>", self.hide_placeholder)
+            self.entry.bind("<FocusOut>", self.show_placeholder)
+    
+    def show_placeholder(self, event=None):
+        if not self.entry.get():
+            self.entry.insert(0, self.placeholder)
+            self.entry.config(fg="#666666")
+            self.placeholder_active = True
+    
+    def hide_placeholder(self, event=None):
+        if self.placeholder_active:
+            self.entry.delete(0, tk.END)
+            self.entry.config(fg="#00ff00")
+            self.placeholder_active = False
+    
+    def get(self):
+        if self.placeholder_active:
+            return ""
+        return self.entry.get()
+    
+    def insert(self, index, text):
+        self.hide_placeholder()
+        self.entry.insert(index, text)
 
-frame = tk.Frame(root, bg="#000000", padx=35, pady=35)
-frame.pack(expand=True, fill="both")
 
-tk.Label(frame, text="FOLDER ŹRÓDŁOWY:", font=("Arial", 10, "bold"), bg="#000000", fg="#ffffff").pack(anchor="w")
-folder_path_entry = tk.Entry(frame, bg="#1a1a1a", fg="#ffffff", borderwidth=0, highlightthickness=1, highlightbackground="#333333")
-folder_path_entry.pack(pady=(5, 10), fill="x")
-tk.Button(frame, text="WYBIERZ FOLDER", command=lambda: (folder_path_entry.delete(0, tk.END), folder_path_entry.insert(0, filedialog.askdirectory())), bg="#333333", fg="#ffffff", relief="flat", cursor="hand2").pack(anchor="w")
+class SzukajkaGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Szukajka Premium")
+        self.root.geometry("900x750")
+        self.root.configure(bg="#0a0a0a")
+        self.root.resizable(True, True)
+        # Minimalna wielkość okna
+        self.root.minsize(900, 750)
+        
+        self.engine = Szukajka()
+        self.selected_files = []
+        self.save_folder = None  # Folder zapisu wyników
+        self.is_searching = False
+        
+        self.setup_gui()
+    
+    def create_gradient_bg(self):
+        """Tworzy gradient w tle"""
+        canvas = tk.Canvas(self.root, width=900, height=750, bg="#0a0a0a", highlightthickness=0)
+        canvas.place(x=0, y=0)
+        
+        # Gradient od góry do dołu
+        for i in range(750):
+            r = int(10 + (i / 750) * 5)
+            g = int(10 + (i / 750) * 10)
+            b = int(10 + (i / 750) * 5)
+            color = f'#{r:02x}{g:02x}{b:02x}'
+            canvas.create_line(0, i, 900, i, fill=color)
+        
+        return canvas
+    
+    def setup_gui(self):
+        # Gradient background
+        self.create_gradient_bg()
+        
+        # Main container z przezroczystością
+        main_container = tk.Frame(self.root, bg="#0a0a0a")
+        main_container.place(relx=0.5, rely=0.5, anchor="center", width=850, height=720)
+        
+        # ===== HEADER =====
+        header_frame = tk.Frame(main_container, bg="#0a0a0a")
+        header_frame.pack(pady=(5, 10))
+        
+        # Logo i tytuł
+        title_frame = tk.Frame(header_frame, bg="#0a0a0a")
+        title_frame.pack()
+        
+        tk.Label(
+            title_frame,
+            text="⚡",
+            font=("Arial", 28),
+            bg="#0a0a0a",
+            fg="#00ff00"
+        ).pack(side="left", padx=(0, 5))
+        
+        title_container = tk.Frame(title_frame, bg="#0a0a0a")
+        title_container.pack(side="left")
+        
+        tk.Label(
+            title_container,
+            text="SZUKAJKA",
+            font=("Arial", 20, "bold"),
+            bg="#0a0a0a",
+            fg="#00ff00"
+        ).pack(anchor="w")
+        
+        tk.Label(
+            title_container,
+            text="Ultra-Fast • 8MB Buffer • 200GB+",
+            font=("Arial", 8),
+            bg="#0a0a0a",
+            fg="#666666"
+        ).pack(anchor="w")
+        
+        # ===== SEKCJA PLIKÓW =====
+        files_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
+        files_section.pack(fill="x", pady=(0, 8), padx=30)
+        
+        # Header sekcji
+        tk.Label(
+            files_section,
+            text="📁  PLIKI ŹRÓDŁOWE",
+            font=("Arial", 10, "bold"),
+            bg="#0f0f0f",
+            fg="#00ff00",
+            anchor="w"
+        ).pack(fill="x", padx=15, pady=(10, 5))
+        
+        # Status plików
+        self.files_status = tk.Label(
+            files_section,
+            text="Nie wybrano plików • Kliknij poniżej aby dodać",
+            font=("Arial", 9),
+            bg="#0f0f0f",
+            fg="#666666",
+            anchor="w"
+        )
+        self.files_status.pack(fill="x", padx=15, pady=(0, 8))
+        
+        # Przyciski wyboru plików
+        btn_container = tk.Frame(files_section, bg="#0f0f0f")
+        btn_container.pack(pady=(0, 10))
+        
+        file_btn = RoundedButton(
+            btn_container,
+            "📄 Plik",
+            self.select_file,
+            "#1a4d1a",
+            "#00ff00",
+            width=120,
+            height=35
+        )
+        file_btn.pack(side="left", padx=3)
+        
+        multiple_btn = RoundedButton(
+            btn_container,
+            "📂 Wiele",
+            self.select_multiple_files,
+            "#1a4d1a",
+            "#00ff00",
+            width=120,
+            height=35
+        )
+        multiple_btn.pack(side="left", padx=3)
+        
+        folder_btn = RoundedButton(
+            btn_container,
+            "📁 Folder",
+            self.select_folder,
+            "#1a4d1a",
+            "#00ff00",
+            width=120,
+            height=35
+        )
+        folder_btn.pack(side="left", padx=3)
+        
+        # ===== SEKCJA WYSZUKIWANIA =====
+        search_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
+        search_section.pack(fill="x", pady=(0, 8), padx=30)
+        
+        tk.Label(
+            search_section,
+            text="🔍  SZUKANA FRAZA",
+            font=("Arial", 10, "bold"),
+            bg="#0f0f0f",
+            fg="#00ff00",
+            anchor="w"
+        ).pack(fill="x", padx=15, pady=(10, 5))
+        
+        # Entry z gradientem
+        entry_container = tk.Frame(search_section, bg="#0f0f0f")
+        entry_container.pack(fill="x", padx=15, pady=(0, 5))
+        
+        self.search_entry = ModernEntry(entry_container)
+        self.search_entry.pack(fill="x", ipady=8)
+        self.search_entry.insert(0, "tb7.pl")
+        
+        tk.Label(
+            search_section,
+            text="💡 Wpisz domenę (np. cda.pl) • Separatory: : ; | TAB",
+            font=("Arial", 8),
+            bg="#0f0f0f",
+            fg="#555555"
+        ).pack(fill="x", padx=15, pady=(0, 10))
+        
+        # ===== SEKCJA ZAPISZ DO =====
+        save_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
+        save_section.pack(fill="x", pady=(0, 8), padx=30)
+        
+        tk.Label(
+            save_section,
+            text="💾  ZAPISZ DO",
+            font=("Arial", 10, "bold"),
+            bg="#0f0f0f",
+            fg="#00ff00",
+            anchor="w"
+        ).pack(fill="x", padx=15, pady=(10, 5))
+        
+        # Status zapisu
+        self.save_status = tk.Label(
+            save_section,
+            text="Automatycznie w folderze z plikami źródłowymi",
+            font=("Arial", 9),
+            bg="#0f0f0f",
+            fg="#666666",
+            anchor="w"
+        )
+        self.save_status.pack(fill="x", padx=15, pady=(0, 8))
+        
+        # Przycisk wyboru folderu zapisu
+        save_btn_container = tk.Frame(save_section, bg="#0f0f0f")
+        save_btn_container.pack(pady=(0, 10))
+        
+        save_btn = RoundedButton(
+            save_btn_container,
+            "📁 Wybierz folder",
+            self.select_save_folder,
+            "#1a4d1a",
+            "#00ff00",
+            width=150,
+            height=35
+        )
+        save_btn.pack(side="left", padx=5)
+        
+        # ===== SEKCJA POSTĘPU =====
+        progress_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
+        progress_section.pack(fill="both", expand=True, pady=(0, 8), padx=30)
+        
+        tk.Label(
+            progress_section,
+            text="📊  POSTĘP",
+            font=("Arial", 10, "bold"),
+            bg="#0f0f0f",
+            fg="#00ff00",
+            anchor="w"
+        ).pack(fill="x", padx=15, pady=(10, 5))
+        
+        # Progress bar z Custom Style
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure(
+            "Custom.Horizontal.TProgressbar",
+            troughcolor='#1a1a1a',
+            bordercolor='#0f0f0f',
+            background='#00ff00',
+            lightcolor='#00ff00',
+            darkcolor='#00cc00',
+            thickness=20
+        )
+        
+        self.progress_bar = ttk.Progressbar(
+            progress_section,
+            style="Custom.Horizontal.TProgressbar",
+            mode="determinate",
+            length=700
+        )
+        self.progress_bar.pack(fill="x", padx=15, pady=(0, 8))
+        
+        # Statystyki
+        stats_container = tk.Frame(progress_section, bg="#0a0a0a")
+        stats_container.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        
+        self.stats_text = tk.Text(
+            stats_container,
+            height=4,
+            font=("Consolas", 8),
+            bg="#0a0a0a",
+            fg="#00ff00",
+            bd=0,
+            relief="flat",
+            state="disabled",
+            cursor="arrow"
+        )
+        self.stats_text.pack(fill="both", expand=True, padx=3, pady=3)
+        
+        # ===== PRZYCISKI AKCJI =====
+        action_frame = tk.Frame(main_container, bg="#0a0a0a")
+        action_frame.pack(pady=(0, 5))
+        
+        self.start_btn = RoundedButton(
+            action_frame,
+            "⚡ SKANUJ",
+            self.start_search,
+            "#00ff00",
+            "#000000",
+            width=250,
+            height=40
+        )
+        self.start_btn.pack(side="left", padx=5)
+        
+        self.stop_btn = RoundedButton(
+            action_frame,
+            "⏹ STOP",
+            self.stop_search,
+            "#ff3333",
+            "#ffffff",
+            width=150,
+            height=40
+        )
+        self.stop_btn.pack(side="left", padx=5)
+        # Stop button działa od razu
+        self.stop_btn_disabled = True
+        
+        # Footer
+        tk.Label(
+            main_container,
+            text="© 2026 MARECKI SYSTEMS • v2.1",
+            font=("Arial", 7),
+            bg="#0a0a0a",
+            fg="#333333"
+        ).pack(pady=(5, 0))
+    
+    def select_file(self):
+        file = filedialog.askopenfilename(
+            title="Wybierz plik do przeszukania",
+            filetypes=[("Pliki tekstowe", "*.txt"), ("Wszystkie pliki", "*.*")]
+        )
+        if file:
+            self.selected_files = [file]
+            self.update_files_status()
+    
+    def select_multiple_files(self):
+        files = filedialog.askopenfilenames(
+            title="Wybierz wiele plików",
+            filetypes=[("Pliki tekstowe", "*.txt"), ("Wszystkie pliki", "*.*")]
+        )
+        if files:
+            self.selected_files = list(files)
+            self.update_files_status()
+    
+    def select_folder(self):
+        folder = filedialog.askdirectory(
+            title="Wybierz folder z plikami"
+        )
+        if folder:
+            # Znajdź WSZYSTKIE pliki w folderze
+            all_files = []
+            for file in os.listdir(folder):
+                file_path = os.path.join(folder, file)
+                if os.path.isfile(file_path):
+                    all_files.append(file_path)
+            
+            if all_files:
+                self.selected_files = all_files
+                self.update_files_status()
+            else:
+                messagebox.showwarning(
+                    "Brak plików",
+                    "W wybranym folderze nie znaleziono żadnych plików"
+                )
+    
+    def select_save_folder(self):
+        folder = filedialog.askdirectory(
+            title="Wybierz folder do zapisu wyników"
+        )
+        if folder:
+            self.save_folder = folder
+            self.save_status.config(
+                text=f"✓  {folder}",
+                fg="#00ff00"
+            )
+    
+    def update_files_status(self):
+        if not self.selected_files:
+            self.files_status.config(
+                text="Nie wybrano plików • Kliknij poniżej aby dodać",
+                fg="#666666"
+            )
+            return
+        
+        total_size = sum(os.path.getsize(f) for f in self.selected_files)
+        size_str = self.engine.format_size(total_size)
+        
+        count_text = "1 plik" if len(self.selected_files) == 1 else f"{len(self.selected_files)} pliki"
+        text = f"✓  {count_text} • {size_str} • {os.path.dirname(self.selected_files[0])}"
+        
+        self.files_status.config(text=text, fg="#00ff00")
+    
+    def update_stats(self, processed, total, found, speed, eta):
+        """Aktualizacja statystyk"""
+        percent = (processed / total * 100) if total > 0 else 0
+        self.progress_bar['value'] = percent
+        
+        speed_str = self.engine.format_size(speed)
+        eta_str = self.engine.format_time(eta)
+        elapsed_str = self.engine.format_time(time.time() - self.start_time)
+        
+        stats = f"""
+  ┌─────────────────────────────────────────────────────┐
+  │  ZNALEZIONE WYNIKI: {found:,}                          
+  │  CZAS TRWANIA:      {elapsed_str}                     
+  │  PRĘDKOŚĆ:          {speed_str}/s                     
+  │  POZOSTAŁY CZAS:    {eta_str}                         
+  └─────────────────────────────────────────────────────┘
+        """
+        
+        self.stats_text.config(state="normal")
+        self.stats_text.delete(1.0, tk.END)
+        self.stats_text.insert(1.0, stats.strip())
+        self.stats_text.config(state="disabled")
+        
+        self.root.update_idletasks()
+    
+    def start_search(self):
+        if not self.selected_files:
+            messagebox.showerror(
+                "Brak plików",
+                "⚠  Najpierw wybierz pliki do przeszukania!"
+            )
+            return
+        
+        search_phrase = self.search_entry.get().strip()
+        if not search_phrase:
+            messagebox.showerror(
+                "Brak frazy",
+                "⚠  Wpisz frazę do wyszukania!"
+            )
+            return
+        
+        self.is_searching = True
+        self.engine.stop_flag = False
+        self.start_time = time.time()
+        
+        def search_thread():
+            output_file, found_count = self.engine.search_in_files(
+                self.selected_files,
+                search_phrase,
+                self.update_stats,
+                self.save_folder  # Przekaż wybrany folder zapisu
+            )
+            
+            self.is_searching = False
+            
+            if output_file and not self.engine.stop_flag:
+                total_time = self.engine.format_time(time.time() - self.start_time)
+                messagebox.showinfo(
+                    "✓ Skanowanie zakończone!",
+                    f"Znaleziono {found_count:,} unikalnych wyników!\n\n"
+                    f"Czas: {total_time}\n\n"
+                    f"Zapisano do:\n{output_file}"
+                )
+        
+        threading.Thread(target=search_thread, daemon=True).start()
+    
+    def stop_search(self):
+        self.engine.stop_flag = True
+        messagebox.showwarning(
+            "Przerwano",
+            "⚠  Skanowanie zostało zatrzymane przez użytkownika"
+        )
 
-tk.Label(frame, text="SZUKANA FRAZA:", font=("Arial", 10, "bold"), bg="#000000", fg="#ffffff").pack(anchor="w", pady=(25, 5))
-entry_phrase = tk.Entry(frame, bg="#1a1a1a", fg="#ffffff", borderwidth=0, highlightthickness=1, highlightbackground="#333333")
-entry_phrase.insert(0, "cda.pl")
-entry_phrase.pack(pady=5, fill="x")
 
-progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
-progress.pack(pady=20, fill="x")
-
-start_btn = tk.Button(frame, text="URUCHOM I ZAPISZ", command=search_files, bg="#ffffff", fg="#000000", font=("Arial", 10, "bold"), relief="flat", height=2, cursor="hand2")
-start_btn.pack(side="bottom", fill="x")
-
-root.mainloop()
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SzukajkaGUI(root)
+    root.mainloop()
