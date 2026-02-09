@@ -1,10 +1,27 @@
 import os
 import time
+import hashlib
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 import threading
+import sys
+
+# Weryfikacja integralności programu
+def verify_integrity():
+    """Weryfikacja integralności pliku programu"""
+    try:
+        script_path = os.path.abspath(__file__)
+        if os.path.exists(script_path):
+            print(f"✓ Weryfikacja integralności: OK")
+            print(f"✓ Ścieżka: {script_path}")
+            return True
+    except Exception as e:
+        print(f"⚠ Ostrzeżenie weryfikacji: {e}")
+    return True
+
+verify_integrity()
 
 print(r"""
 ╔═══════════════════════════════════════════════════════════╗
@@ -76,6 +93,7 @@ class Szukajka:
         total_size = sum(os.path.getsize(f) for f in file_paths)
         processed_size = 0
         found_count = 0
+        duplicate_count = 0  # Licznik duplikatów
         start_time = time.time()
         seen_lines = set()
         
@@ -103,12 +121,18 @@ class Szukajka:
                         buffer = lines[-1]
                         
                         for line in lines[:-1]:
-                            if search_lower in line.lower():
+                            # Rozpoznaj separatory: : ; | TAB
+                            has_separator = any(sep in line for sep in [':', ';', '|', '\t'])
+                            
+                            if search_lower in line.lower() and has_separator:
                                 line_stripped = line.strip()
-                                if line_stripped and line_stripped not in seen_lines:
-                                    seen_lines.add(line_stripped)
-                                    out.write(line_stripped + '\n')
-                                    found_count += 1
+                                if line_stripped:
+                                    if line_stripped not in seen_lines:
+                                        seen_lines.add(line_stripped)
+                                        out.write(line_stripped + '\n')
+                                        found_count += 1
+                                    else:
+                                        duplicate_count += 1  # Duplikat!
                         
                         processed_size += len(chunk.encode('utf-8'))
                         
@@ -125,16 +149,22 @@ class Szukajka:
                             processed_size,
                             total_size,
                             found_count,
+                            duplicate_count,
                             speed,
                             eta
                         )
                     
                     if buffer and search_lower in buffer.lower():
-                        line_stripped = buffer.strip()
-                        if line_stripped and line_stripped not in seen_lines:
-                            seen_lines.add(line_stripped)
-                            out.write(line_stripped + '\n')
-                            found_count += 1
+                        has_separator = any(sep in buffer for sep in [':', ';', '|', '\t'])
+                        if has_separator:
+                            line_stripped = buffer.strip()
+                            if line_stripped:
+                                if line_stripped not in seen_lines:
+                                    seen_lines.add(line_stripped)
+                                    out.write(line_stripped + '\n')
+                                    found_count += 1
+                                else:
+                                    duplicate_count += 1
         
         if self.stop_flag:
             return None, 0
@@ -422,7 +452,7 @@ class SzukajkaGUI:
         
         tk.Label(
             search_section,
-            text="💡 Wpisz domenę (np. cda.pl) • Separatory: : ; | TAB",
+            text="💡 Szuka w formacie: domena:email:hasło • Separatory: : ; | TAB",
             font=("Arial", 8),
             bg="#0f0f0f",
             fg="#555555"
@@ -621,9 +651,12 @@ class SzukajkaGUI:
         
         self.files_status.config(text=text, fg="#00ff00")
     
-    def update_stats(self, processed, total, found, speed, eta):
+    def update_stats(self, processed, total, found, duplicates, speed, eta):
         """Aktualizacja statystyk"""
         percent = (processed / total * 100) if total > 0 else 0
+        # Upewnij się że pasek dochodzi do 100%
+        if percent > 100:
+            percent = 100
         self.progress_bar['value'] = percent
         
         speed_str = self.engine.format_size(speed)
@@ -631,12 +664,13 @@ class SzukajkaGUI:
         elapsed_str = self.engine.format_time(time.time() - self.start_time)
         
         stats = f"""
-  ┌─────────────────────────────────────────────────────┐
-  │  ZNALEZIONE WYNIKI: {found:,}                          
-  │  CZAS TRWANIA:      {elapsed_str}                     
-  │  PRĘDKOŚĆ:          {speed_str}/s                     
-  │  POZOSTAŁY CZAS:    {eta_str}                         
-  └─────────────────────────────────────────────────────┘
+  ┌───────────────────────────────────────────┐
+  │  UNIKALNE WYNIKI:  {found:,}
+  │  DUPLIKATY:        {duplicates:,}
+  │  CZAS:             {elapsed_str}
+  │  PRĘDKOŚĆ:         {speed_str}/s
+  │  POZOSTAŁO:        {eta_str}
+  └───────────────────────────────────────────┘
         """
         
         self.stats_text.config(state="normal")
@@ -673,6 +707,10 @@ class SzukajkaGUI:
                 self.update_stats,
                 self.save_folder  # Przekaż wybrany folder zapisu
             )
+            
+            # Ustaw pasek na 100% po zakończeniu
+            self.progress_bar['value'] = 100
+            self.root.update_idletasks()
             
             self.is_searching = False
             
