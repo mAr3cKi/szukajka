@@ -117,11 +117,17 @@ class Szukajka:
 
         search_lower = search_phrase.lower()
         import re
-        # Wzorce filtrowania formatu
-        # email:pass → email@domena:hasło (lub z innym separatorem)
-        # user:pass → tekst_bez_@ : hasło
-        email_pattern = re.compile(r'[^\s:;|]+@[^\s:;|]+[:\s;|]+.+')
-        user_pattern = re.compile(r'[^\s@:;|]+[:\s;|]+.+')
+        # Separatory używane w liniach
+        sep_pattern = re.compile(r'[:;|\t]')
+
+        def get_login_part(line):
+            """Wyciąga login z linii - druga kolumna jeśli 3+ części, pierwsza jeśli 2"""
+            parts = sep_pattern.split(line, maxsplit=2)
+            if len(parts) >= 3:
+                return parts[1]  # domena:LOGIN:hasło
+            elif len(parts) == 2:
+                return parts[0]  # LOGIN:hasło
+            return line
 
         with open(output_file, 'w', encoding='utf-8', errors='ignore') as out:
             for file_path in file_paths:
@@ -153,12 +159,11 @@ class Szukajka:
                                 line_stripped = line.strip()
 
                                 # Filtrowanie formatu
-                                if format_filter == "email":
-                                    if not email_pattern.match(line_stripped):
+                                if format_filter:
+                                    login = get_login_part(line_stripped)
+                                    if format_filter == "email" and '@' not in login:
                                         continue
-                                elif format_filter == "user":
-                                    # user:pass = nie zawiera @
-                                    if '@' in line_stripped.split(':')[0].split(';')[0].split('|')[0]:
+                                    elif format_filter == "user" and '@' in login:
                                         continue
 
                                 # Użyj lowercase do porównania duplikatów
@@ -199,11 +204,11 @@ class Szukajka:
 
                             # Filtrowanie formatu (reszta bufora)
                             skip = False
-                            if format_filter == "email":
-                                if not email_pattern.match(line_stripped):
+                            if format_filter:
+                                login = get_login_part(line_stripped)
+                                if format_filter == "email" and '@' not in login:
                                     skip = True
-                            elif format_filter == "user":
-                                if '@' in line_stripped.split(':')[0].split(';')[0].split('|')[0]:
+                                elif format_filter == "user" and '@' in login:
                                     skip = True
 
                             if not skip:
@@ -868,3 +873,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = SzukajkaGUI(root)
     root.mainloop()
+
