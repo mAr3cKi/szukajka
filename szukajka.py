@@ -48,7 +48,7 @@ print(r"""
 ║   ██║ ╚═╝ ██║██║  ██║██║  ██║███████╗╚██████╗██║  ██╗██║ ║
 ║   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝ ║
 ║                                                           ║
-║         SZUKAJKA PREMIUM v2.1 - Ultra Edition             ║
+║         SZUKAJKA PREMIUM v3.0 - Ultra Edition             ║
 ║         Bufor 8MB • Obsługuje pliki 200GB+                ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
@@ -78,8 +78,10 @@ class Szukajka:
             minutes = int((seconds % 3600) // 60)
             return f"{hours}h {minutes}m"
     
-    def get_unique_filename(self, directory, base_name="wyniki_tb7_pl"):
+    def get_unique_filename(self, directory, base_name=None):
         """Generuje unikalną nazwę pliku"""
+        if not base_name:
+            base_name = "wyniki"
         counter = 1
         while True:
             if counter == 1:
@@ -92,28 +94,35 @@ class Szukajka:
                 return full_path
             counter += 1
     
-    def search_in_files(self, file_paths, search_phrase, progress_callback, save_folder=None):
+    def search_in_files(self, file_paths, search_phrase, progress_callback, save_folder=None, output_name=None, format_filter=None):
         """Przeszukuje pliki z buforowaniem 8MB"""
         if not file_paths:
             return None, 0
-        
+
         # Użyj custom folderu zapisu lub domyślnego
         if save_folder:
             output_dir = save_folder
         else:
             output_dir = os.path.dirname(file_paths[0])
-        
-        output_file = self.get_unique_filename(output_dir)
+
+        output_file = self.get_unique_filename(output_dir, base_name=output_name)
         
         total_size = sum(os.path.getsize(f) for f in file_paths)
         processed_size = 0
         found_count = 0
         duplicate_count = 0  # Licznik duplikatów
         start_time = time.time()
-        seen_lines = set()
+        seen_lines = set()  # Będzie przechowywać LOWERCASE wersje dla porównania
+        original_lines = {}  # Mapowanie lowercase -> oryginalna linia
         
         search_lower = search_phrase.lower()
-        
+        import re
+        # Wzorce filtrowania formatu
+        # email:pass → email@domena:hasło (lub z innym separatorem)
+        # user:pass → tekst_bez_@ : hasło
+        email_pattern = re.compile(r'[^\s:;|]+@[^\s:;|]+[:\s;|]+.+')
+        user_pattern = re.compile(r'[^\s@:;|]+[:\s;|]+.+')
+
         with open(output_file, 'w', encoding='utf-8', errors='ignore') as out:
             for file_path in file_paths:
                 if self.stop_flag:
@@ -138,16 +147,30 @@ class Szukajka:
                         for line in lines[:-1]:
                             # Rozpoznaj separatory: : ; | TAB
                             has_separator = any(sep in line for sep in [':', ';', '|', '\t'])
-                            
+
                             if search_lower in line.lower() and has_separator:
+                                # Normalizuj linię - usuń białe znaki
                                 line_stripped = line.strip()
-                                if line_stripped:
-                                    if line_stripped not in seen_lines:
-                                        seen_lines.add(line_stripped)
-                                        out.write(line_stripped + '\n')
-                                        found_count += 1
-                                    else:
-                                        duplicate_count += 1  # Duplikat!
+
+                                # Filtrowanie formatu
+                                if format_filter == "email":
+                                    if not email_pattern.match(line_stripped):
+                                        continue
+                                elif format_filter == "user":
+                                    # user:pass = nie zawiera @
+                                    if '@' in line_stripped.split(':')[0].split(';')[0].split('|')[0]:
+                                        continue
+
+                                # Użyj lowercase do porównania duplikatów
+                                line_lower = line_stripped.lower()
+
+                                if line_stripped and line_lower not in seen_lines:
+                                    seen_lines.add(line_lower)
+                                    original_lines[line_lower] = line_stripped
+                                    out.write(line_stripped + '\n')
+                                    found_count += 1
+                                else:
+                                    duplicate_count += 1  # Duplikat!
                         
                         processed_size += len(chunk.encode('utf-8'))
                         
@@ -173,9 +196,21 @@ class Szukajka:
                         has_separator = any(sep in buffer for sep in [':', ';', '|', '\t'])
                         if has_separator:
                             line_stripped = buffer.strip()
-                            if line_stripped:
-                                if line_stripped not in seen_lines:
-                                    seen_lines.add(line_stripped)
+
+                            # Filtrowanie formatu (reszta bufora)
+                            skip = False
+                            if format_filter == "email":
+                                if not email_pattern.match(line_stripped):
+                                    skip = True
+                            elif format_filter == "user":
+                                if '@' in line_stripped.split(':')[0].split(';')[0].split('|')[0]:
+                                    skip = True
+
+                            if not skip:
+                                line_lower = line_stripped.lower()
+                                if line_stripped and line_lower not in seen_lines:
+                                    seen_lines.add(line_lower)
+                                    original_lines[line_lower] = line_stripped
                                     out.write(line_stripped + '\n')
                                     found_count += 1
                                 else:
@@ -311,11 +346,11 @@ class SzukajkaGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Szukajka Premium")
-        self.root.geometry("900x750")
+        self.root.geometry("900x870")
         self.root.configure(bg="#0a0a0a")
         self.root.resizable(True, True)
         # Minimalna wielkość okna
-        self.root.minsize(900, 750)
+        self.root.minsize(900, 870)
         
         self.engine = Szukajka()
         self.selected_files = []
@@ -326,14 +361,14 @@ class SzukajkaGUI:
     
     def create_gradient_bg(self):
         """Tworzy gradient w tle"""
-        canvas = tk.Canvas(self.root, width=900, height=750, bg="#0a0a0a", highlightthickness=0)
+        canvas = tk.Canvas(self.root, width=900, height=870, bg="#0a0a0a", highlightthickness=0)
         canvas.place(x=0, y=0)
-        
+
         # Gradient od góry do dołu
-        for i in range(750):
-            r = int(10 + (i / 750) * 5)
-            g = int(10 + (i / 750) * 10)
-            b = int(10 + (i / 750) * 5)
+        for i in range(870):
+            r = int(10 + (i / 870) * 5)
+            g = int(10 + (i / 870) * 10)
+            b = int(10 + (i / 870) * 5)
             color = f'#{r:02x}{g:02x}{b:02x}'
             canvas.create_line(0, i, 900, i, fill=color)
         
@@ -345,7 +380,7 @@ class SzukajkaGUI:
         
         # Main container z przezroczystością
         main_container = tk.Frame(self.root, bg="#0a0a0a")
-        main_container.place(relx=0.5, rely=0.5, anchor="center", width=850, height=720)
+        main_container.place(relx=0.5, rely=0.5, anchor="center", width=850, height=840)
         
         # ===== HEADER =====
         header_frame = tk.Frame(main_container, bg="#0a0a0a")
@@ -461,9 +496,8 @@ class SzukajkaGUI:
         entry_container = tk.Frame(search_section, bg="#0f0f0f")
         entry_container.pack(fill="x", padx=15, pady=(0, 5))
         
-        self.search_entry = ModernEntry(entry_container)
+        self.search_entry = ModernEntry(entry_container, placeholder="np. cda.pl, tb7.pl...")
         self.search_entry.pack(fill="x", ipady=8)
-        self.search_entry.insert(0, "tb7.pl")
         
         tk.Label(
             search_section,
@@ -476,7 +510,7 @@ class SzukajkaGUI:
         # ===== SEKCJA ZAPISZ DO =====
         save_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
         save_section.pack(fill="x", pady=(0, 8), padx=30)
-        
+
         tk.Label(
             save_section,
             text="💾  ZAPISZ DO",
@@ -485,8 +519,31 @@ class SzukajkaGUI:
             fg="#00ff00",
             anchor="w"
         ).pack(fill="x", padx=15, pady=(10, 5))
-        
-        # Status zapisu
+
+        # Nazwa pliku wynikowego
+        name_row = tk.Frame(save_section, bg="#0f0f0f")
+        name_row.pack(fill="x", padx=15, pady=(0, 5))
+
+        tk.Label(
+            name_row,
+            text="Nazwa pliku:",
+            font=("Arial", 9),
+            bg="#0f0f0f",
+            fg="#aaaaaa",
+        ).pack(side="left", padx=(0, 5))
+
+        self.output_name_entry = ModernEntry(name_row, placeholder="wyniki_cda_pl")
+        self.output_name_entry.pack(side="left", fill="x", expand=True, ipady=4)
+
+        tk.Label(
+            name_row,
+            text=".txt",
+            font=("Arial", 9),
+            bg="#0f0f0f",
+            fg="#aaaaaa",
+        ).pack(side="left", padx=(3, 0))
+
+        # Status zapisu (folder)
         self.save_status = tk.Label(
             save_section,
             text="Automatycznie w folderze z plikami źródłowymi",
@@ -495,12 +552,12 @@ class SzukajkaGUI:
             fg="#666666",
             anchor="w"
         )
-        self.save_status.pack(fill="x", padx=15, pady=(0, 8))
-        
+        self.save_status.pack(fill="x", padx=15, pady=(0, 5))
+
         # Przycisk wyboru folderu zapisu
         save_btn_container = tk.Frame(save_section, bg="#0f0f0f")
-        save_btn_container.pack(pady=(0, 10))
-        
+        save_btn_container.pack(pady=(0, 5))
+
         save_btn = RoundedButton(
             save_btn_container,
             "📁 Wybierz folder",
@@ -511,6 +568,40 @@ class SzukajkaGUI:
             height=35
         )
         save_btn.pack(side="left", padx=5)
+
+        # ===== SEKCJA FILTRUJ FORMAT =====
+        filter_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
+        filter_section.pack(fill="x", pady=(0, 8), padx=30)
+
+        tk.Label(
+            filter_section,
+            text="🔧  FILTRUJ FORMAT",
+            font=("Arial", 10, "bold"),
+            bg="#0f0f0f",
+            fg="#00ff00",
+            anchor="w"
+        ).pack(fill="x", padx=15, pady=(10, 5))
+
+        self.format_var = tk.StringVar(value="all")
+
+        filter_row = tk.Frame(filter_section, bg="#0f0f0f")
+        filter_row.pack(fill="x", padx=15, pady=(0, 10))
+
+        for text, value in [("Wszystko", "all"), ("email:pass", "email"), ("user:pass", "user")]:
+            tk.Radiobutton(
+                filter_row,
+                text=text,
+                variable=self.format_var,
+                value=value,
+                font=("Arial", 10),
+                bg="#0f0f0f",
+                fg="#00ff00",
+                selectcolor="#1a1a1a",
+                activebackground="#0f0f0f",
+                activeforeground="#00ff00",
+                highlightthickness=0,
+                bd=0,
+            ).pack(side="left", padx=(0, 20))
         
         # ===== SEKCJA POSTĘPU =====
         progress_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
@@ -594,7 +685,7 @@ class SzukajkaGUI:
         # Footer
         tk.Label(
             main_container,
-            text="© 2026 MARECKI SYSTEMS • v2.1",
+            text="© 2026 MARECKI SYSTEMS • v3.0",
             font=("Arial", 7),
             bg="#0a0a0a",
             fg="#333333"
@@ -715,12 +806,25 @@ class SzukajkaGUI:
         self.engine.stop_flag = False
         self.start_time = time.time()
         
+        # Nazwa pliku wynikowego
+        output_name = self.output_name_entry.get().strip()
+        if not output_name:
+            # Domyślna nazwa na bazie frazy wyszukiwania
+            safe_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in search_phrase)
+            output_name = f"wyniki_{safe_name}"
+
+        # Filtr formatu
+        fmt = self.format_var.get()
+        format_filter = None if fmt == "all" else fmt
+
         def search_thread():
             output_file, found_count = self.engine.search_in_files(
                 self.selected_files,
                 search_phrase,
                 self.update_stats,
-                self.save_folder  # Przekaż wybrany folder zapisu
+                self.save_folder,
+                output_name,
+                format_filter
             )
             
             # Ustaw pasek na 100% po zakończeniu
