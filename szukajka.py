@@ -125,15 +125,27 @@ class Szukajka:
 
         search_lower = search_phrase.lower()
         import re
-        sep_pattern = re.compile(r'[:;|\t]')
+        email_re = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
         def extract_credentials(line):
-            """Wyciąga login:hasło z linii (usuwa domenę z początku jeśli jest)"""
-            parts = sep_pattern.split(line, maxsplit=2)
-            if len(parts) >= 3:
-                return parts[1], parts[2], True
-            elif len(parts) == 2:
-                return parts[0], parts[1], True
+            """Wyciąga login:hasło od prawej strony linii"""
+            # Szukaj ostatniego separatora → hasło
+            for sep in [':', ';', '|', '\t']:
+                idx = line.rfind(sep)
+                if idx > 0:
+                    password = line[idx+1:].strip()
+                    rest = line[:idx]
+                    # Szukaj przedostatniego separatora → login
+                    for sep2 in [':', ';', '|', '\t']:
+                        idx2 = rest.rfind(sep2)
+                        if idx2 >= 0:
+                            login = rest[idx2+1:].strip()
+                            if login and password:
+                                return login, password, True
+                    # Tylko 2 części (login:hasło)
+                    if rest.strip() and password:
+                        return rest.strip(), password, True
+                    break
             return line, "", False
 
         def process_line(line_stripped, out_main, out_combo):
@@ -154,9 +166,10 @@ class Szukajka:
             if out_combo and format_filter:
                 login, password, ok = extract_credentials(line_stripped)
                 if ok and password:
-                    if format_filter == "email" and '@' not in login:
+                    has_email = '@' in login and bool(email_re.match(login))
+                    if format_filter == "email" and not has_email:
                         return
-                    elif format_filter == "user" and '@' in login:
+                    elif format_filter == "user" and has_email:
                         return
                     # "both" przepuszcza wszystko
                     combo_line = f"{login}:{password}"
