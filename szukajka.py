@@ -120,14 +120,16 @@ class Szukajka:
         # Separatory używane w liniach
         sep_pattern = re.compile(r'[:;|\t]')
 
-        def get_login_part(line):
-            """Wyciąga login z linii - druga kolumna jeśli 3+ części, pierwsza jeśli 2"""
+        def extract_credentials(line):
+            """Wyciąga login:hasło z linii (usuwa domenę z początku jeśli jest)"""
             parts = sep_pattern.split(line, maxsplit=2)
             if len(parts) >= 3:
-                return parts[1]  # domena:LOGIN:hasło
+                # domena:login:hasło → login, hasło
+                return parts[1], parts[2], True
             elif len(parts) == 2:
-                return parts[0]  # LOGIN:hasło
-            return line
+                # login:hasło → login, hasło
+                return parts[0], parts[1], True
+            return line, "", False
 
         with open(output_file, 'w', encoding='utf-8', errors='ignore') as out:
             for file_path in file_paths:
@@ -158,21 +160,24 @@ class Szukajka:
                                 # Normalizuj linię - usuń białe znaki
                                 line_stripped = line.strip()
 
-                                # Filtrowanie formatu
+                                # Filtrowanie formatu + wyciąganie login:hasło
+                                output_line = line_stripped
                                 if format_filter:
-                                    login = get_login_part(line_stripped)
+                                    login, password, ok = extract_credentials(line_stripped)
+                                    if not ok:
+                                        continue
                                     if format_filter == "email" and '@' not in login:
                                         continue
                                     elif format_filter == "user" and '@' in login:
                                         continue
+                                    output_line = f"{login}:{password}"
 
                                 # Użyj lowercase do porównania duplikatów
-                                line_lower = line_stripped.lower()
+                                line_lower = output_line.lower()
 
-                                if line_stripped and line_lower not in seen_lines:
+                                if output_line and line_lower not in seen_lines:
                                     seen_lines.add(line_lower)
-                                    original_lines[line_lower] = line_stripped
-                                    out.write(line_stripped + '\n')
+                                    out.write(output_line + '\n')
                                     found_count += 1
                                 else:
                                     duplicate_count += 1  # Duplikat!
@@ -203,20 +208,24 @@ class Szukajka:
                             line_stripped = buffer.strip()
 
                             # Filtrowanie formatu (reszta bufora)
+                            output_line = line_stripped
                             skip = False
                             if format_filter:
-                                login = get_login_part(line_stripped)
-                                if format_filter == "email" and '@' not in login:
+                                login, password, ok = extract_credentials(line_stripped)
+                                if not ok:
+                                    skip = True
+                                elif format_filter == "email" and '@' not in login:
                                     skip = True
                                 elif format_filter == "user" and '@' in login:
                                     skip = True
+                                else:
+                                    output_line = f"{login}:{password}"
 
                             if not skip:
-                                line_lower = line_stripped.lower()
-                                if line_stripped and line_lower not in seen_lines:
+                                line_lower = output_line.lower()
+                                if output_line and line_lower not in seen_lines:
                                     seen_lines.add(line_lower)
-                                    original_lines[line_lower] = line_stripped
-                                    out.write(line_stripped + '\n')
+                                    out.write(output_line + '\n')
                                     found_count += 1
                                 else:
                                     duplicate_count += 1
