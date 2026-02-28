@@ -97,7 +97,7 @@ class Szukajka:
     def search_in_files(self, file_paths, search_phrase, progress_callback, save_folder=None, output_name=None, format_filter=None):
         """Przeszukuje pliki z buforowaniem 8MB"""
         if not file_paths:
-            return None, 0
+            return None, 0, None, 0
 
         # Użyj custom folderu zapisu lub domyślnego
         if save_folder:
@@ -105,135 +105,128 @@ class Szukajka:
         else:
             output_dir = os.path.dirname(file_paths[0])
 
+        # Plik główny - pełne linie
         output_file = self.get_unique_filename(output_dir, base_name=output_name)
+
+        # Plik combolist - login:hasło (jeśli zaznaczono filtr)
+        combo_file = None
+        combo_count = 0
+        if format_filter:
+            safe_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in search_phrase)
+            combo_file = self.get_unique_filename(output_dir, base_name=f"{safe_name}_combolist")
 
         total_size = sum(os.path.getsize(f) for f in file_paths)
         processed_size = 0
         found_count = 0
-        duplicate_count = 0  # Licznik duplikatów
+        duplicate_count = 0
         start_time = time.time()
-        seen_lines = set()  # Będzie przechowywać LOWERCASE wersje dla porównania
-        original_lines = {}  # Mapowanie lowercase -> oryginalna linia
+        seen_lines = set()
+        seen_combo = set()
 
         search_lower = search_phrase.lower()
         import re
-        # Separatory używane w liniach
         sep_pattern = re.compile(r'[:;|\t]')
 
         def extract_credentials(line):
             """Wyciąga login:hasło z linii (usuwa domenę z początku jeśli jest)"""
             parts = sep_pattern.split(line, maxsplit=2)
             if len(parts) >= 3:
-                # domena:login:hasło → login, hasło
                 return parts[1], parts[2], True
             elif len(parts) == 2:
-                # login:hasło → login, hasło
                 return parts[0], parts[1], True
             return line, "", False
 
-        with open(output_file, 'w', encoding='utf-8', errors='ignore') as out:
-            for file_path in file_paths:
-                if self.stop_flag:
-                    break
+        def process_line(line_stripped, out_main, out_combo):
+            """Przetwarza jedną linię - zapisuje do plików"""
+            nonlocal found_count, duplicate_count, combo_count
 
-                file_size = os.path.getsize(file_path)
+            # Plik główny - pełne linie (zawsze)
+            line_lower = line_stripped.lower()
+            if line_stripped and line_lower not in seen_lines:
+                seen_lines.add(line_lower)
+                out_main.write(line_stripped + '\n')
+                found_count += 1
+            else:
+                duplicate_count += 1
+                return
 
-                with open(file_path, 'r', encoding='utf-8', errors='ignore', buffering=self.BUFFER_SIZE) as f:
-                    buffer = ""
-                    while True:
-                        if self.stop_flag:
-                            break
+            # Combolist - wyciągnij login:hasło (jeśli filtr aktywny)
+            if out_combo and format_filter:
+                login, password, ok = extract_credentials(line_stripped)
+                if ok and password:
+                    if format_filter == "email" and '@' not in login:
+                        return
+                    elif format_filter == "user" and '@' in login:
+                        return
+                    # "both" przepuszcza wszystko
+                    combo_line = f"{login}:{password}"
+                    combo_lower = combo_line.lower()
+                    if combo_lower not in seen_combo:
+                        seen_combo.add(combo_lower)
+                        out_combo.write(combo_line + '\n')
+                        combo_count += 1
 
-                        chunk = f.read(self.BUFFER_SIZE)
-                        if not chunk:
-                            break
+        combo_fh = open(combo_file, 'w', encoding='utf-8', errors='ignore') if combo_file else None
 
-                        buffer += chunk
-                        lines = buffer.split('\n')
-                        buffer = lines[-1]
+        try:
+            with open(output_file, 'w', encoding='utf-8', errors='ignore') as out:
+                for file_path in file_paths:
+                    if self.stop_flag:
+                        break
 
-                        for line in lines[:-1]:
-                            # Rozpoznaj separatory: : ; | TAB
-                            has_separator = any(sep in line for sep in [':', ';', '|', '\t'])
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore', buffering=self.BUFFER_SIZE) as f:
+                        buffer = ""
+                        while True:
+                            if self.stop_flag:
+                                break
 
-                            if search_lower in line.lower() and has_separator:
-                                # Normalizuj linię - usuń białe znaki
-                                line_stripped = line.strip()
+                            chunk = f.read(self.BUFFER_SIZE)
+                            if not chunk:
+                                break
 
-                                # Filtrowanie formatu + wyciąganie login:hasło
-                                output_line = line_stripped
-                                if format_filter:
-                                    login, password, ok = extract_credentials(line_stripped)
-                                    if not ok:
-                                        continue
-                                    if format_filter == "email" and '@' not in login:
-                                        continue
-                                    elif format_filter == "user" and '@' in login:
-                                        continue
-                                    output_line = f"{login}:{password}"
+                            buffer += chunk
+                            lines = buffer.split('\n')
+                            buffer = lines[-1]
 
-                                # Użyj lowercase do porównania duplikatów
-                                line_lower = output_line.lower()
+                            for line in lines[:-1]:
+                                has_separator = any(sep in line for sep in [':', ';', '|', '\t'])
+                                if search_lower in line.lower() and has_separator:
+                                    line_stripped = line.strip()
+                                    if line_stripped:
+                                        process_line(line_stripped, out, combo_fh)
 
-                                if output_line and line_lower not in seen_lines:
-                                    seen_lines.add(line_lower)
-                                    out.write(output_line + '\n')
-                                    found_count += 1
-                                else:
-                                    duplicate_count += 1  # Duplikat!
+                            processed_size += len(chunk.encode('utf-8'))
 
-                        processed_size += len(chunk.encode('utf-8'))
+                            elapsed = time.time() - start_time
+                            if elapsed > 0:
+                                speed = processed_size / elapsed
+                                remaining = total_size - processed_size
+                                eta = remaining / speed if speed > 0 else 0
+                            else:
+                                speed = 0
+                                eta = 0
 
-                        elapsed = time.time() - start_time
-                        if elapsed > 0:
-                            speed = processed_size / elapsed
-                            remaining = total_size - processed_size
-                            eta = remaining / speed if speed > 0 else 0
-                        else:
-                            speed = 0
-                            eta = 0
+                            progress_callback(
+                                processed_size, total_size,
+                                found_count, duplicate_count,
+                                speed, eta
+                            )
 
-                        progress_callback(
-                            processed_size,
-                            total_size,
-                            found_count,
-                            duplicate_count,
-                            speed,
-                            eta
-                        )
-
-                    if buffer and search_lower in buffer.lower():
-                        has_separator = any(sep in buffer for sep in [':', ';', '|', '\t'])
-                        if has_separator:
-                            line_stripped = buffer.strip()
-
-                            # Filtrowanie formatu (reszta bufora)
-                            output_line = line_stripped
-                            skip = False
-                            if format_filter:
-                                login, password, ok = extract_credentials(line_stripped)
-                                if not ok:
-                                    skip = True
-                                elif format_filter == "email" and '@' not in login:
-                                    skip = True
-                                elif format_filter == "user" and '@' in login:
-                                    skip = True
-                                else:
-                                    output_line = f"{login}:{password}"
-
-                            if not skip:
-                                line_lower = output_line.lower()
-                                if output_line and line_lower not in seen_lines:
-                                    seen_lines.add(line_lower)
-                                    out.write(output_line + '\n')
-                                    found_count += 1
-                                else:
-                                    duplicate_count += 1
+                        # Reszta bufora
+                        if buffer and search_lower in buffer.lower():
+                            has_separator = any(sep in buffer for sep in [':', ';', '|', '\t'])
+                            if has_separator:
+                                line_stripped = buffer.strip()
+                                if line_stripped:
+                                    process_line(line_stripped, out, combo_fh)
+        finally:
+            if combo_fh:
+                combo_fh.close()
 
         if self.stop_flag:
-            return None, 0
+            return None, 0, None, 0
 
-        return output_file, found_count
+        return output_file, found_count, combo_file, combo_count
 
 
 class RoundedButton(tk.Canvas):
@@ -608,26 +601,31 @@ class SzukajkaGUI:
             anchor="w"
         ).pack(fill="x", padx=15, pady=(10, 5))
 
-        self.format_var = tk.StringVar(value="all")
+        self.filter_email = tk.BooleanVar(value=False)
+        self.filter_user = tk.BooleanVar(value=False)
 
         filter_row = tk.Frame(filter_section, bg="#0f0f0f")
         filter_row.pack(fill="x", padx=15, pady=(0, 10))
 
-        for text, value in [("Wszystko", "all"), ("email:pass", "email"), ("user:pass", "user")]:
-            tk.Radiobutton(
-                filter_row,
-                text=text,
-                variable=self.format_var,
-                value=value,
-                font=("Arial", 10),
-                bg="#0f0f0f",
-                fg="#00ff00",
-                selectcolor="#1a1a1a",
-                activebackground="#0f0f0f",
-                activeforeground="#00ff00",
-                highlightthickness=0,
-                bd=0,
-            ).pack(side="left", padx=(0, 20))
+        tk.Checkbutton(
+            filter_row, text="email:pass", variable=self.filter_email,
+            font=("Arial", 10), bg="#0f0f0f", fg="#00ff00",
+            selectcolor="#1a1a1a", activebackground="#0f0f0f",
+            activeforeground="#00ff00", highlightthickness=0, bd=0,
+        ).pack(side="left", padx=(0, 20))
+
+        tk.Checkbutton(
+            filter_row, text="user:pass", variable=self.filter_user,
+            font=("Arial", 10), bg="#0f0f0f", fg="#00ff00",
+            selectcolor="#1a1a1a", activebackground="#0f0f0f",
+            activeforeground="#00ff00", highlightthickness=0, bd=0,
+        ).pack(side="left", padx=(0, 20))
+
+        tk.Label(
+            filter_section,
+            text="💡 Brak zaznaczenia = pełne linie • Zaznaczenie = wyciąga login:hasło",
+            font=("Arial", 8), bg="#0f0f0f", fg="#555555"
+        ).pack(fill="x", padx=15, pady=(0, 10))
 
         # ===== SEKCJA POSTĘPU =====
         progress_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
@@ -839,12 +837,20 @@ class SzukajkaGUI:
             safe_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in search_phrase)
             output_name = f"wyniki_{safe_name}"
 
-        # Filtr formatu
-        fmt = self.format_var.get()
-        format_filter = None if fmt == "all" else fmt
+        # Filtr formatu: None=pełne linie, "email", "user", "both"
+        want_email = self.filter_email.get()
+        want_user = self.filter_user.get()
+        if want_email and want_user:
+            format_filter = "both"
+        elif want_email:
+            format_filter = "email"
+        elif want_user:
+            format_filter = "user"
+        else:
+            format_filter = None
 
         def search_thread():
-            output_file, found_count = self.engine.search_in_files(
+            output_file, found_count, combo_file, combo_count = self.engine.search_in_files(
                 self.selected_files,
                 search_phrase,
                 self.update_stats,
@@ -861,12 +867,16 @@ class SzukajkaGUI:
 
             if output_file and not self.engine.stop_flag:
                 total_time = self.engine.format_time(time.time() - self.start_time)
-                messagebox.showinfo(
-                    "✓ Skanowanie zakończone!",
+                msg = (
                     f"Znaleziono {found_count:,} unikalnych wyników!\n\n"
                     f"Czas: {total_time}\n\n"
-                    f"Zapisano do:\n{output_file}"
+                    f"Pełne linie:\n{output_file}"
                 )
+                if combo_file and combo_count > 0:
+                    msg += (
+                        f"\n\nCombolist ({combo_count:,} wpisów):\n{combo_file}"
+                    )
+                messagebox.showinfo("✓ Skanowanie zakończone!", msg)
 
         threading.Thread(target=search_thread, daemon=True).start()
 
