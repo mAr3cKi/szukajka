@@ -359,34 +359,40 @@ class SzukajkaGUI:
 
         self.setup_gui()
 
-    def create_gradient_bg(self):
-        """Tworzy gradient w tle - rozciąga się z oknem"""
-        canvas = tk.Canvas(self.root, bg="#0a0a0a", highlightthickness=0)
-        canvas.place(x=0, y=0, relwidth=1, relheight=1)
-
-        def redraw_gradient(event=None):
-            canvas.delete("gradient")
-            h = canvas.winfo_height()
-            w = canvas.winfo_width()
-            if h < 1 or w < 1:
-                return
-            for i in range(0, h, 2):  # co 2 piksele - szybciej
-                r = int(10 + (i / h) * 5)
-                g = int(10 + (i / h) * 10)
-                b = int(10 + (i / h) * 5)
-                color = f'#{r:02x}{g:02x}{b:02x}'
-                canvas.create_line(0, i, w, i+1, fill=color, tags="gradient")
-
-        canvas.bind("<Configure>", redraw_gradient)
-        return canvas
-
     def setup_gui(self):
-        # Gradient background
-        self.create_gradient_bg()
+        # Scrollowalny kontener
+        scroll_canvas = tk.Canvas(self.root, bg="#0a0a0a", highlightthickness=0)
+        scrollbar = tk.Scrollbar(self.root, orient="vertical", command=scroll_canvas.yview)
+        scroll_canvas.configure(yscrollcommand=scrollbar.set)
 
-        # Main container - skaluje się z oknem
-        main_container = tk.Frame(self.root, bg="#0a0a0a")
-        main_container.place(relx=0.5, rely=0.0, anchor="n", relwidth=0.95, relheight=1.0)
+        scrollbar.pack(side="right", fill="y")
+        scroll_canvas.pack(side="left", fill="both", expand=True)
+
+        main_container = tk.Frame(scroll_canvas, bg="#0a0a0a")
+        canvas_window = scroll_canvas.create_window((0, 0), window=main_container, anchor="n")
+
+        def on_frame_configure(event):
+            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
+
+        def on_canvas_configure(event):
+            scroll_canvas.itemconfig(canvas_window, width=event.width)
+
+        main_container.bind("<Configure>", on_frame_configure)
+        scroll_canvas.bind("<Configure>", on_canvas_configure)
+
+        # Przewijanie kółkiem myszy
+        def on_mousewheel(event):
+            scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def on_button4(event):
+            scroll_canvas.yview_scroll(-3, "units")
+
+        def on_button5(event):
+            scroll_canvas.yview_scroll(3, "units")
+
+        scroll_canvas.bind_all("<MouseWheel>", on_mousewheel)
+        scroll_canvas.bind_all("<Button-4>", on_button4)
+        scroll_canvas.bind_all("<Button-5>", on_button5)
 
         # ===== HEADER =====
         header_frame = tk.Frame(main_container, bg="#0a0a0a")
