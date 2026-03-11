@@ -48,7 +48,7 @@ print(r"""
 ║   ██║ ╚═╝ ██║██║  ██║██║  ██║███████╗╚██████╗██║  ██╗██║ ║
 ║   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝ ║
 ║                                                           ║
-║         SZUKAJKA PREMIUM v3.0 - Ultra Edition             ║
+║         SZUKAJKA PREMIUM v3.1 - Ultra Edition             ║
 ║         Bufor 8MB • Obsługuje pliki 200GB+                ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
@@ -94,7 +94,7 @@ class Szukajka:
                 return full_path
             counter += 1
 
-    def search_in_files(self, file_paths, search_phrase, progress_callback, save_folder=None, output_name=None, format_filter=None):
+    def search_in_files(self, file_paths, search_phrase, progress_callback, save_folder=None, output_name=None, format_filter=None, search_mode="fraza"):
         """Przeszukuje pliki z buforowaniem 8MB"""
         if not file_paths:
             return None, 0, None, 0
@@ -125,24 +125,41 @@ class Szukajka:
 
         search_lower = search_phrase.lower()
         import re
-        email_re = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
+        # Regex na email gdziekolwiek w linii
+        email_re = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
 
         def extract_credentials(line):
-            """Wyciąga login:hasło od prawej strony linii"""
-            # Szukaj ostatniego separatora → hasło
+            """Wyciąga login:hasło — regex dla email, od prawej dla user"""
+            # 1) Szukaj emaila regexem w linii
+            m = email_re.search(line)
+            if m:
+                email = m.group(0)
+                after = line[m.end():]
+                # Hasło = następny segment (do kolejnego separatora)
+                if after and after[0] in ':;|\t':
+                    rest = after[1:]
+                    # Znajdź koniec hasła (następny separator = domena/site)
+                    end_idx = len(rest)
+                    for sep in ':;|\t':
+                        idx = rest.find(sep)
+                        if idx >= 0 and idx < end_idx:
+                            end_idx = idx
+                    password = rest[:end_idx].strip()
+                    if password:
+                        return email, password, True
+
+            # 2) Fallback: od prawej (dla user:pass bez @)
             for sep in [':', ';', '|', '\t']:
                 idx = line.rfind(sep)
                 if idx > 0:
                     password = line[idx+1:].strip()
                     rest = line[:idx]
-                    # Szukaj przedostatniego separatora → login
                     for sep2 in [':', ';', '|', '\t']:
                         idx2 = rest.rfind(sep2)
                         if idx2 >= 0:
                             login = rest[idx2+1:].strip()
                             if login and password:
                                 return login, password, True
-                    # Tylko 2 części (login:hasło)
                     if rest.strip() and password:
                         return rest.strip(), password, True
                     break
@@ -203,10 +220,25 @@ class Szukajka:
 
                             for line in lines[:-1]:
                                 has_separator = any(sep in line for sep in [':', ';', '|', '\t'])
-                                if search_lower in line.lower() and has_separator:
-                                    line_stripped = line.strip()
-                                    if line_stripped:
-                                        process_line(line_stripped, out, combo_fh)
+                                if not has_separator:
+                                    continue
+                                line_stripped = line.strip()
+                                if not line_stripped:
+                                    continue
+
+                                if search_mode == "fraza":
+                                    matched = search_lower in line.lower()
+                                elif search_mode == "email":
+                                    login, password, ok = extract_credentials(line_stripped)
+                                    matched = ok and search_lower in login.lower()
+                                elif search_mode == "haslo":
+                                    login, password, ok = extract_credentials(line_stripped)
+                                    matched = ok and search_lower in password.lower()
+                                else:
+                                    matched = search_lower in line.lower()
+
+                                if matched:
+                                    process_line(line_stripped, out, combo_fh)
 
                             processed_size += len(chunk.encode('utf-8'))
 
@@ -226,12 +258,23 @@ class Szukajka:
                             )
 
                         # Reszta bufora
-                        if buffer and search_lower in buffer.lower():
+                        if buffer:
                             has_separator = any(sep in buffer for sep in [':', ';', '|', '\t'])
                             if has_separator:
                                 line_stripped = buffer.strip()
                                 if line_stripped:
-                                    process_line(line_stripped, out, combo_fh)
+                                    if search_mode == "fraza":
+                                        matched = search_lower in buffer.lower()
+                                    elif search_mode == "email":
+                                        login, password, ok = extract_credentials(line_stripped)
+                                        matched = ok and search_lower in login.lower()
+                                    elif search_mode == "haslo":
+                                        login, password, ok = extract_credentials(line_stripped)
+                                        matched = ok and search_lower in password.lower()
+                                    else:
+                                        matched = search_lower in buffer.lower()
+                                    if matched:
+                                        process_line(line_stripped, out, combo_fh)
         finally:
             if combo_fh:
                 combo_fh.close()
@@ -242,65 +285,61 @@ class Szukajka:
         return output_file, found_count, combo_file, combo_count
 
 
-class RoundedButton(tk.Canvas):
-    """Zaokrąglony przycisk z gradientem"""
-    def __init__(self, parent, text, command, bg_color, fg_color, width=200, height=50):
-        super().__init__(parent, width=width, height=height, bg=parent['bg'], highlightthickness=0)
+# ===== PALETA KOLORÓW (styl DRM Player) =====
+C = {
+    "bg": "#000000",
+    "card": "#0d0d0d",
+    "card_border": "#1a1a1a",
+    "input_bg": "#0a0a0a",
+    "input_border": "#2d1a3d",
+    "accent1": "#e94560",      # róż
+    "accent2": "#a855f7",      # fiolet
+    "text": "#ffffff",
+    "text_dim": "#888888",
+    "text_muted": "#555555",
+    "success": "#22c55e",
+    "danger": "#ef4444",
+    "font": "Segoe UI",
+    "mono": "Consolas",
+}
 
+
+class RoundedButton(tk.Canvas):
+    """Zaokrąglony przycisk w stylu DRM Player"""
+    def __init__(self, parent, text, command, bg_color, fg_color, width=200, height=44):
+        super().__init__(parent, width=width, height=height, bg=parent['bg'], highlightthickness=0)
         self.command = command
         self.bg_color = bg_color
         self.fg_color = fg_color
         self.text = text
-
+        self._hover_color = self._calc_hover(bg_color)
         self.draw_button()
         self.bind("<Button-1>", lambda e: self.on_click())
         self.bind("<Enter>", lambda e: self.on_hover())
         self.bind("<Leave>", lambda e: self.on_leave())
 
+    def _calc_hover(self, color):
+        try:
+            r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+            return f"#{min(255,r+30):02x}{min(255,g+30):02x}{min(255,b+30):02x}"
+        except:
+            return color
+
     def draw_button(self, hover=False):
         self.delete("all")
+        color = self._hover_color if hover else self.bg_color
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        self.create_rounded_rect(3, 3, w-3, h-3, radius=12, fill=color, outline="")
+        self.create_text(w//2, h//2, text=self.text, fill=self.fg_color,
+                        font=(C["font"], 11, "bold"))
 
-        color = self.lighten_color(self.bg_color) if hover else self.bg_color
-
-        # Zaokrąglony prostokąt
-        self.create_rounded_rect(5, 5, self.winfo_reqwidth()-5, self.winfo_reqheight()-5,
-                                 radius=15, fill=color, outline="")
-
-        # Tekst
-        self.create_text(self.winfo_reqwidth()//2, self.winfo_reqheight()//2,
-                        text=self.text, fill=self.fg_color,
-                        font=("Arial", 12, "bold"))
-
-    def create_rounded_rect(self, x1, y1, x2, y2, radius=25, **kwargs):
-        points = [x1+radius, y1,
-                  x1+radius, y1,
-                  x2-radius, y1,
-                  x2-radius, y1,
-                  x2, y1,
-                  x2, y1+radius,
-                  x2, y1+radius,
-                  x2, y2-radius,
-                  x2, y2-radius,
-                  x2, y2,
-                  x2-radius, y2,
-                  x2-radius, y2,
-                  x1+radius, y2,
-                  x1+radius, y2,
-                  x1, y2,
-                  x1, y2-radius,
-                  x1, y2-radius,
-                  x1, y1+radius,
-                  x1, y1+radius,
-                  x1, y1]
+    def create_rounded_rect(self, x1, y1, x2, y2, radius=12, **kwargs):
+        points = [x1+radius, y1, x1+radius, y1, x2-radius, y1, x2-radius, y1,
+                  x2, y1, x2, y1+radius, x2, y1+radius, x2, y2-radius,
+                  x2, y2-radius, x2, y2, x2-radius, y2, x2-radius, y2,
+                  x1+radius, y2, x1+radius, y2, x1, y2, x1, y2-radius,
+                  x1, y2-radius, x1, y1+radius, x1, y1+radius, x1, y1]
         return self.create_polygon(points, smooth=True, **kwargs)
-
-    def lighten_color(self, color):
-        """Rozjaśnia kolor dla efektu hover"""
-        if color == "#00ff00":
-            return "#33ff33"
-        elif color == "#ff3333":
-            return "#ff5555"
-        return color
 
     def on_hover(self):
         self.draw_button(hover=True)
@@ -316,25 +355,16 @@ class RoundedButton(tk.Canvas):
 
 
 class ModernEntry(tk.Frame):
-    """Nowoczesne pole tekstowe z placeholderem"""
+    """Pole tekstowe w stylu DRM Player"""
     def __init__(self, parent, placeholder="", **kwargs):
-        super().__init__(parent, bg="#0f0f0f")
-
+        super().__init__(parent, bg=C["input_border"], bd=1, relief="flat")
         self.entry = tk.Entry(
-            self,
-            font=("Arial", 11),
-            bg="#1a1a1a",
-            fg="#00ff00",
-            insertbackground="#00ff00",
-            bd=0,
-            relief="flat",
-            **kwargs
+            self, font=(C["font"], 11), bg=C["input_bg"], fg=C["text"],
+            insertbackground=C["accent2"], bd=0, relief="flat", **kwargs
         )
         self.entry.pack(fill="both", expand=True, padx=2, pady=2)
-
         self.placeholder = placeholder
         self.placeholder_active = False
-
         if placeholder:
             self.show_placeholder()
             self.entry.bind("<FocusIn>", self.hide_placeholder)
@@ -343,13 +373,13 @@ class ModernEntry(tk.Frame):
     def show_placeholder(self, event=None):
         if not self.entry.get():
             self.entry.insert(0, self.placeholder)
-            self.entry.config(fg="#666666")
+            self.entry.config(fg=C["text_muted"])
             self.placeholder_active = True
 
     def hide_placeholder(self, event=None):
         if self.placeholder_active:
             self.entry.delete(0, tk.END)
-            self.entry.config(fg="#00ff00")
+            self.entry.config(fg=C["text"])
             self.placeholder_active = False
 
     def get(self):
@@ -365,368 +395,188 @@ class ModernEntry(tk.Frame):
 class SzukajkaGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Szukajka Premium")
+        self.root.title("Szukajka Premium v3.1")
         self.root.geometry("900x870")
-        self.root.configure(bg="#0a0a0a")
+        self.root.configure(bg=C["bg"])
         self.root.resizable(True, True)
-        # Minimalna wielkość okna
         self.root.minsize(750, 650)
-
         self.engine = Szukajka()
         self.selected_files = []
-        self.save_folder = None  # Folder zapisu wyników
+        self.save_folder = None
         self.is_searching = False
-
         self.setup_gui()
+
+    def _make_section(self, parent, padx=30):
+        """Tworzy sekcję-kartę z obramowaniem"""
+        frame = tk.Frame(parent, bg=C["card"], highlightbackground=C["card_border"],
+                        highlightthickness=1)
+        frame.pack(fill="x", pady=(0, 10), padx=padx)
+        return frame
+
+    def _section_label(self, parent, text):
+        """Nagłówek sekcji z kolorem akcentu"""
+        tk.Label(parent, text=text, font=(C["font"], 10, "bold"),
+                bg=C["card"], fg=C["accent1"], anchor="w"
+        ).pack(fill="x", padx=15, pady=(12, 5))
 
     def setup_gui(self):
         # Scrollowalny kontener
-        scroll_canvas = tk.Canvas(self.root, bg="#0a0a0a", highlightthickness=0)
+        scroll_canvas = tk.Canvas(self.root, bg=C["bg"], highlightthickness=0)
         scrollbar = tk.Scrollbar(self.root, orient="vertical", command=scroll_canvas.yview)
         scroll_canvas.configure(yscrollcommand=scrollbar.set)
-
         scrollbar.pack(side="right", fill="y")
         scroll_canvas.pack(side="left", fill="both", expand=True)
 
-        main_container = tk.Frame(scroll_canvas, bg="#0a0a0a")
+        main_container = tk.Frame(scroll_canvas, bg=C["bg"])
         canvas_window = scroll_canvas.create_window((0, 0), window=main_container, anchor="n")
 
         def on_frame_configure(event):
             scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
-
         def on_canvas_configure(event):
             scroll_canvas.itemconfig(canvas_window, width=event.width)
-
         main_container.bind("<Configure>", on_frame_configure)
         scroll_canvas.bind("<Configure>", on_canvas_configure)
 
-        # Przewijanie kółkiem myszy
-        def on_mousewheel(event):
-            scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        def on_button4(event):
-            scroll_canvas.yview_scroll(-3, "units")
-
-        def on_button5(event):
-            scroll_canvas.yview_scroll(3, "units")
-
-        scroll_canvas.bind_all("<MouseWheel>", on_mousewheel)
-        scroll_canvas.bind_all("<Button-4>", on_button4)
-        scroll_canvas.bind_all("<Button-5>", on_button5)
+        # Przewijanie kółkiem myszy (Linux)
+        scroll_canvas.bind_all("<Button-4>", lambda e: scroll_canvas.yview_scroll(-3, "units"))
+        scroll_canvas.bind_all("<Button-5>", lambda e: scroll_canvas.yview_scroll(3, "units"))
+        scroll_canvas.bind_all("<MouseWheel>", lambda e: scroll_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
         # ===== HEADER =====
-        header_frame = tk.Frame(main_container, bg="#0a0a0a")
-        header_frame.pack(pady=(5, 10))
+        header = tk.Frame(main_container, bg=C["bg"])
+        header.pack(pady=(15, 12))
 
-        # Logo i tytuł
-        title_frame = tk.Frame(header_frame, bg="#0a0a0a")
-        title_frame.pack()
+        tk.Label(header, text="SZUKAJKA", font=(C["font"], 24, "bold"),
+                bg=C["bg"], fg=C["accent1"]).pack()
+        tk.Label(header, text="PREMIUM", font=(C["font"], 12),
+                bg=C["bg"], fg=C["accent2"]).pack()
+        tk.Label(header, text="Ultra-Fast  |  8MB Buffer  |  200GB+",
+                font=(C["font"], 8), bg=C["bg"], fg=C["text_muted"]).pack(pady=(2, 0))
 
-        tk.Label(
-            title_frame,
-            text="⚡",
-            font=("Arial", 28),
-            bg="#0a0a0a",
-            fg="#00ff00"
-        ).pack(side="left", padx=(0, 5))
+        # ===== PLIKI ŹRÓDŁOWE =====
+        files_sec = self._make_section(main_container)
+        self._section_label(files_sec, "PLIKI ŹRÓDŁOWE")
 
-        title_container = tk.Frame(title_frame, bg="#0a0a0a")
-        title_container.pack(side="left")
-
-        tk.Label(
-            title_container,
-            text="SZUKAJKA",
-            font=("Arial", 20, "bold"),
-            bg="#0a0a0a",
-            fg="#00ff00"
-        ).pack(anchor="w")
-
-        tk.Label(
-            title_container,
-            text="Ultra-Fast • 8MB Buffer • 200GB+",
-            font=("Arial", 8),
-            bg="#0a0a0a",
-            fg="#666666"
-        ).pack(anchor="w")
-
-        # ===== SEKCJA PLIKÓW =====
-        files_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
-        files_section.pack(fill="x", pady=(0, 8), padx=30)
-
-        # Header sekcji
-        tk.Label(
-            files_section,
-            text="📁  PLIKI ŹRÓDŁOWE",
-            font=("Arial", 10, "bold"),
-            bg="#0f0f0f",
-            fg="#00ff00",
-            anchor="w"
-        ).pack(fill="x", padx=15, pady=(10, 5))
-
-        # Status plików
-        self.files_status = tk.Label(
-            files_section,
-            text="Nie wybrano plików • Kliknij poniżej aby dodać",
-            font=("Arial", 9),
-            bg="#0f0f0f",
-            fg="#666666",
-            anchor="w"
-        )
+        self.files_status = tk.Label(files_sec,
+            text="Nie wybrano plików", font=(C["font"], 9),
+            bg=C["card"], fg=C["text_dim"], anchor="w")
         self.files_status.pack(fill="x", padx=15, pady=(0, 8))
 
-        # Przyciski wyboru plików
-        btn_container = tk.Frame(files_section, bg="#0f0f0f")
-        btn_container.pack(pady=(0, 10))
+        btn_row = tk.Frame(files_sec, bg=C["card"])
+        btn_row.pack(pady=(0, 12))
+        for txt, cmd in [("Plik", self.select_file), ("Wiele", self.select_multiple_files), ("Folder", self.select_folder)]:
+            RoundedButton(btn_row, txt, cmd, "#1a1028", C["accent2"], width=120, height=36).pack(side="left", padx=4)
 
-        file_btn = RoundedButton(
-            btn_container,
-            "📄 Plik",
-            self.select_file,
-            "#1a4d1a",
-            "#00ff00",
-            width=120,
-            height=35
-        )
-        file_btn.pack(side="left", padx=3)
+        # ===== SZUKANA FRAZA =====
+        search_sec = self._make_section(main_container)
+        self._section_label(search_sec, "SZUKANA FRAZA")
 
-        multiple_btn = RoundedButton(
-            btn_container,
-            "📂 Wiele",
-            self.select_multiple_files,
-            "#1a4d1a",
-            "#00ff00",
-            width=120,
-            height=35
-        )
-        multiple_btn.pack(side="left", padx=3)
-
-        folder_btn = RoundedButton(
-            btn_container,
-            "📁 Folder",
-            self.select_folder,
-            "#1a4d1a",
-            "#00ff00",
-            width=120,
-            height=35
-        )
-        folder_btn.pack(side="left", padx=3)
-
-        # ===== SEKCJA WYSZUKIWANIA =====
-        search_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
-        search_section.pack(fill="x", pady=(0, 8), padx=30)
-
-        tk.Label(
-            search_section,
-            text="🔍  SZUKANA FRAZA",
-            font=("Arial", 10, "bold"),
-            bg="#0f0f0f",
-            fg="#00ff00",
-            anchor="w"
-        ).pack(fill="x", padx=15, pady=(10, 5))
-
-        # Entry z gradientem
-        entry_container = tk.Frame(search_section, bg="#0f0f0f")
-        entry_container.pack(fill="x", padx=15, pady=(0, 5))
-
-        self.search_entry = ModernEntry(entry_container, placeholder="np. cda.pl, tb7.pl...")
+        entry_box = tk.Frame(search_sec, bg=C["card"])
+        entry_box.pack(fill="x", padx=15, pady=(0, 5))
+        self.search_entry = ModernEntry(entry_box, placeholder="np. cda.pl, tb7.pl...")
         self.search_entry.pack(fill="x", ipady=8)
 
-        tk.Label(
-            search_section,
-            text="💡 Szuka w formacie: domena:email:hasło • Separatory: : ; | TAB",
-            font=("Arial", 8),
-            bg="#0f0f0f",
-            fg="#555555"
+        # Tryb wyszukiwania
+        mode_row = tk.Frame(search_sec, bg=C["card"])
+        mode_row.pack(fill="x", padx=15, pady=(0, 3))
+
+        self.search_mode = tk.StringVar(value="fraza")
+        for txt, val, tip in [("Fraza (dowolny tekst)", "fraza", ""),
+                               ("Szukaj po emailu/loginie", "email", ""),
+                               ("Szukaj po haśle", "haslo", "")]:
+            tk.Radiobutton(mode_row, text=txt, variable=self.search_mode, value=val,
+                font=(C["font"], 9), bg=C["card"], fg=C["accent2"],
+                selectcolor=C["input_bg"], activebackground=C["card"],
+                activeforeground=C["accent1"], highlightthickness=0, bd=0,
+                indicatoron=True,
+            ).pack(side="left", padx=(0, 14))
+
+        tk.Label(search_sec, text="Fraza = szuka w całej linii  |  Email = szuka w loginie  |  Hasło = szuka w haśle",
+                font=(C["font"], 8), bg=C["card"], fg=C["text_muted"]
         ).pack(fill="x", padx=15, pady=(0, 10))
 
-        # ===== SEKCJA ZAPISZ DO =====
-        save_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
-        save_section.pack(fill="x", pady=(0, 8), padx=30)
+        # ===== ZAPISZ DO =====
+        save_sec = self._make_section(main_container)
+        self._section_label(save_sec, "ZAPISZ DO")
 
-        tk.Label(
-            save_section,
-            text="💾  ZAPISZ DO",
-            font=("Arial", 10, "bold"),
-            bg="#0f0f0f",
-            fg="#00ff00",
-            anchor="w"
-        ).pack(fill="x", padx=15, pady=(10, 5))
-
-        # Nazwa pliku wynikowego
-        name_row = tk.Frame(save_section, bg="#0f0f0f")
+        name_row = tk.Frame(save_sec, bg=C["card"])
         name_row.pack(fill="x", padx=15, pady=(0, 5))
-
-        tk.Label(
-            name_row,
-            text="Nazwa pliku:",
-            font=("Arial", 9),
-            bg="#0f0f0f",
-            fg="#aaaaaa",
-        ).pack(side="left", padx=(0, 5))
-
+        tk.Label(name_row, text="Nazwa pliku:", font=(C["font"], 9),
+                bg=C["card"], fg=C["text_dim"]).pack(side="left", padx=(0, 5))
         self.output_name_entry = ModernEntry(name_row, placeholder="wyniki_cda_pl")
         self.output_name_entry.pack(side="left", fill="x", expand=True, ipady=4)
+        tk.Label(name_row, text=".txt", font=(C["font"], 9),
+                bg=C["card"], fg=C["text_dim"]).pack(side="left", padx=(3, 0))
 
-        tk.Label(
-            name_row,
-            text=".txt",
-            font=("Arial", 9),
-            bg="#0f0f0f",
-            fg="#aaaaaa",
-        ).pack(side="left", padx=(3, 0))
-
-        # Status zapisu (folder)
-        self.save_status = tk.Label(
-            save_section,
-            text="Automatycznie w folderze z plikami źródłowymi",
-            font=("Arial", 9),
-            bg="#0f0f0f",
-            fg="#666666",
-            anchor="w"
-        )
+        self.save_status = tk.Label(save_sec,
+            text="Automatycznie w folderze źródłowym", font=(C["font"], 9),
+            bg=C["card"], fg=C["text_dim"], anchor="w")
         self.save_status.pack(fill="x", padx=15, pady=(0, 5))
 
-        # Przycisk wyboru folderu zapisu
-        save_btn_container = tk.Frame(save_section, bg="#0f0f0f")
-        save_btn_container.pack(pady=(0, 5))
+        save_btn_row = tk.Frame(save_sec, bg=C["card"])
+        save_btn_row.pack(pady=(0, 10))
+        RoundedButton(save_btn_row, "Wybierz folder", self.select_save_folder,
+                      "#1a1028", C["accent2"], width=160, height=36).pack()
 
-        save_btn = RoundedButton(
-            save_btn_container,
-            "📁 Wybierz folder",
-            self.select_save_folder,
-            "#1a4d1a",
-            "#00ff00",
-            width=150,
-            height=35
-        )
-        save_btn.pack(side="left", padx=5)
-
-        # ===== SEKCJA FILTRUJ FORMAT =====
-        filter_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
-        filter_section.pack(fill="x", pady=(0, 8), padx=30)
-
-        tk.Label(
-            filter_section,
-            text="🔧  FILTRUJ FORMAT",
-            font=("Arial", 10, "bold"),
-            bg="#0f0f0f",
-            fg="#00ff00",
-            anchor="w"
-        ).pack(fill="x", padx=15, pady=(10, 5))
+        # ===== FILTRUJ FORMAT (combolist) =====
+        filter_sec = self._make_section(main_container)
+        self._section_label(filter_sec, "COMBOLIST")
 
         self.filter_email = tk.BooleanVar(value=False)
         self.filter_user = tk.BooleanVar(value=False)
 
-        filter_row = tk.Frame(filter_section, bg="#0f0f0f")
-        filter_row.pack(fill="x", padx=15, pady=(0, 10))
+        filter_row = tk.Frame(filter_sec, bg=C["card"])
+        filter_row.pack(fill="x", padx=15, pady=(0, 5))
 
-        tk.Checkbutton(
-            filter_row, text="email:pass", variable=self.filter_email,
-            font=("Arial", 10), bg="#0f0f0f", fg="#00ff00",
-            selectcolor="#1a1a1a", activebackground="#0f0f0f",
-            activeforeground="#00ff00", highlightthickness=0, bd=0,
-        ).pack(side="left", padx=(0, 20))
+        for txt, var in [("email:pass", self.filter_email), ("user:pass", self.filter_user)]:
+            tk.Checkbutton(filter_row, text=txt, variable=var,
+                font=(C["font"], 10), bg=C["card"], fg=C["accent2"],
+                selectcolor=C["input_bg"], activebackground=C["card"],
+                activeforeground=C["accent1"], highlightthickness=0, bd=0,
+            ).pack(side="left", padx=(0, 20))
 
-        tk.Checkbutton(
-            filter_row, text="user:pass", variable=self.filter_user,
-            font=("Arial", 10), bg="#0f0f0f", fg="#00ff00",
-            selectcolor="#1a1a1a", activebackground="#0f0f0f",
-            activeforeground="#00ff00", highlightthickness=0, bd=0,
-        ).pack(side="left", padx=(0, 20))
-
-        tk.Label(
-            filter_section,
-            text="💡 Brak zaznaczenia = pełne linie • Zaznaczenie = wyciąga login:hasło",
-            font=("Arial", 8), bg="#0f0f0f", fg="#555555"
+        tk.Label(filter_sec,
+            text="Brak zaznaczenia = tylko pełne linie  |  Zaznaczenie = dodatkowy plik combolist",
+            font=(C["font"], 8), bg=C["card"], fg=C["text_muted"]
         ).pack(fill="x", padx=15, pady=(0, 10))
 
-        # ===== SEKCJA POSTĘPU =====
-        progress_section = tk.Frame(main_container, bg="#0f0f0f", bd=0)
-        progress_section.pack(fill="both", expand=True, pady=(0, 8), padx=30)
+        # ===== POSTĘP =====
+        progress_sec = self._make_section(main_container)
+        self._section_label(progress_sec, "POSTĘP")
 
-        tk.Label(
-            progress_section,
-            text="📊  POSTĘP",
-            font=("Arial", 10, "bold"),
-            bg="#0f0f0f",
-            fg="#00ff00",
-            anchor="w"
-        ).pack(fill="x", padx=15, pady=(10, 5))
-
-        # Progress bar z Custom Style
         style = ttk.Style()
         style.theme_use('default')
-        style.configure(
-            "Custom.Horizontal.TProgressbar",
-            troughcolor='#1a1a1a',
-            bordercolor='#0f0f0f',
-            background='#00ff00',
-            lightcolor='#00ff00',
-            darkcolor='#00cc00',
-            thickness=20
-        )
+        style.configure("DRM.Horizontal.TProgressbar",
+            troughcolor='#1a1a1a', bordercolor=C["card"],
+            background=C["accent1"], lightcolor=C["accent1"],
+            darkcolor='#c73a50', thickness=20)
 
-        self.progress_bar = ttk.Progressbar(
-            progress_section,
-            style="Custom.Horizontal.TProgressbar",
-            mode="determinate",
-            length=700
-        )
+        self.progress_bar = ttk.Progressbar(progress_sec,
+            style="DRM.Horizontal.TProgressbar", mode="determinate")
         self.progress_bar.pack(fill="x", padx=15, pady=(0, 8))
 
-        # Statystyki
-        stats_container = tk.Frame(progress_section, bg="#0a0a0a")
-        stats_container.pack(fill="both", expand=True, padx=15, pady=(0, 10))
-
-        self.stats_text = tk.Text(
-            stats_container,
-            height=4,
-            font=("Consolas", 8),
-            bg="#0a0a0a",
-            fg="#00ff00",
-            bd=0,
-            relief="flat",
-            state="disabled",
-            cursor="arrow"
-        )
+        stats_box = tk.Frame(progress_sec, bg=C["bg"])
+        stats_box.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        self.stats_text = tk.Text(stats_box, height=4, font=(C["mono"], 9),
+            bg=C["bg"], fg=C["accent2"], bd=0, relief="flat",
+            state="disabled", cursor="arrow")
         self.stats_text.pack(fill="both", expand=True, padx=3, pady=3)
 
         # ===== PRZYCISKI AKCJI =====
-        action_frame = tk.Frame(main_container, bg="#0a0a0a")
-        action_frame.pack(pady=(0, 5))
+        action_frame = tk.Frame(main_container, bg=C["bg"])
+        action_frame.pack(pady=(0, 8))
 
-        self.start_btn = RoundedButton(
-            action_frame,
-            "⚡ SKANUJ",
-            self.start_search,
-            "#00ff00",
-            "#000000",
-            width=250,
-            height=40
-        )
+        self.start_btn = RoundedButton(action_frame, "SKANUJ", self.start_search,
+            C["accent1"], "#ffffff", width=260, height=44)
         self.start_btn.pack(side="left", padx=5)
 
-        self.stop_btn = RoundedButton(
-            action_frame,
-            "⏹ STOP",
-            self.stop_search,
-            "#ff3333",
-            "#ffffff",
-            width=150,
-            height=40
-        )
+        self.stop_btn = RoundedButton(action_frame, "STOP", self.stop_search,
+            "#2a1215", C["danger"], width=150, height=44)
         self.stop_btn.pack(side="left", padx=5)
-        # Stop button działa od razu
-        self.stop_btn_disabled = True
 
         # Footer
-        tk.Label(
-            main_container,
-            text="© 2026 MARECKI SYSTEMS • v3.0",
-            font=("Arial", 7),
-            bg="#0a0a0a",
-            fg="#333333"
-        ).pack(pady=(5, 0))
+        tk.Label(main_container, text="MARECKI SYSTEMS  v3.1",
+            font=(C["font"], 7), bg=C["bg"], fg="#333333").pack(pady=(5, 10))
 
     def select_file(self):
         file = filedialog.askopenfilename(
@@ -773,26 +623,18 @@ class SzukajkaGUI:
         )
         if folder:
             self.save_folder = folder
-            self.save_status.config(
-                text=f"✓  {folder}",
-                fg="#00ff00"
-            )
+            self.save_status.config(text=folder, fg=C["success"])
 
     def update_files_status(self):
         if not self.selected_files:
-            self.files_status.config(
-                text="Nie wybrano plików • Kliknij poniżej aby dodać",
-                fg="#666666"
-            )
+            self.files_status.config(text="Nie wybrano plików", fg=C["text_dim"])
             return
-
         total_size = sum(os.path.getsize(f) for f in self.selected_files)
         size_str = self.engine.format_size(total_size)
-
-        count_text = "1 plik" if len(self.selected_files) == 1 else f"{len(self.selected_files)} pliki"
-        text = f"✓  {count_text} • {size_str} • {os.path.dirname(self.selected_files[0])}"
-
-        self.files_status.config(text=text, fg="#00ff00")
+        n = len(self.selected_files)
+        count_text = "1 plik" if n == 1 else f"{n} pliki" if n < 5 else f"{n} plików"
+        text = f"{count_text}  |  {size_str}  |  {os.path.dirname(self.selected_files[0])}"
+        self.files_status.config(text=text, fg=C["success"])
 
     def update_stats(self, processed, total, found, duplicates, speed, eta):
         """Aktualizacja statystyk"""
@@ -806,19 +648,15 @@ class SzukajkaGUI:
         eta_str = self.engine.format_time(eta)
         elapsed_str = self.engine.format_time(time.time() - self.start_time)
 
-        stats = f"""
-  ┌───────────────────────────────────────────┐
-  │  UNIKALNE WYNIKI:  {found:,}
-  │  DUPLIKATY:        {duplicates:,}
-  │  CZAS:             {elapsed_str}
-  │  PRĘDKOŚĆ:         {speed_str}/s
-  │  POZOSTAŁO:        {eta_str}
-  └───────────────────────────────────────────┘
-        """
+        stats = (
+            f"  WYNIKI:  {found:,}   |   DUPLIKATY: {duplicates:,}\n"
+            f"  CZAS:    {elapsed_str}   |   PRĘDKOŚĆ:  {speed_str}/s\n"
+            f"  POZOSTAŁO:  {eta_str}"
+        )
 
         self.stats_text.config(state="normal")
         self.stats_text.delete(1.0, tk.END)
-        self.stats_text.insert(1.0, stats.strip())
+        self.stats_text.insert(1.0, stats)
         self.stats_text.config(state="disabled")
 
         self.root.update_idletasks()
@@ -869,7 +707,8 @@ class SzukajkaGUI:
                 self.update_stats,
                 self.save_folder,
                 output_name,
-                format_filter
+                format_filter,
+                self.search_mode.get()
             )
 
             # Ustaw pasek na 100% po zakończeniu
@@ -905,4 +744,5 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = SzukajkaGUI(root)
     root.mainloop()
+
 
