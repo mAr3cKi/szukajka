@@ -48,7 +48,7 @@ print(r"""
 ║   ██║ ╚═╝ ██║██║  ██║██║  ██║███████╗╚██████╗██║  ██╗██║ ║
 ║   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝ ║
 ║                                                           ║
-║         SZUKAJKA PREMIUM v3.1 - Ultra Edition             ║
+║         SZUKAJKA PREMIUM v3.0 - Ultra Edition             ║
 ║         Bufor 8MB • Obsługuje pliki 200GB+                ║
 ║                                                           ║
 ╚═══════════════════════════════════════════════════════════╝
@@ -94,10 +94,12 @@ class Szukajka:
                 return full_path
             counter += 1
 
-    def search_in_files(self, file_paths, search_phrase, progress_callback, save_folder=None, output_name=None, format_filter=None, search_mode="fraza"):
-        """Przeszukuje pliki z buforowaniem 8MB"""
-        if not file_paths:
-            return None, 0, None, 0
+    def search_in_files(self, file_paths, search_phrases, progress_callback,
+                        save_folder=None, output_name=None, format_filter=None,
+                        strip_spaces=False):
+        """Przeszukuje pliki z buforowaniem 8MB - obsługuje wiele fraz (do 10)"""
+        if not file_paths or not search_phrases:
+            return {}
 
         # Użyj custom folderu zapisu lub domyślnego
         if save_folder:
@@ -105,50 +107,24 @@ class Szukajka:
         else:
             output_dir = os.path.dirname(file_paths[0])
 
-        # Plik główny - pełne linie
-        output_file = self.get_unique_filename(output_dir, base_name=output_name)
-
-        # Plik combolist - login:hasło (jeśli zaznaczono filtr)
-        combo_file = None
-        combo_count = 0
-        if format_filter:
-            safe_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in search_phrase)
-            combo_file = self.get_unique_filename(output_dir, base_name=f"{safe_name}_combolist")
-
-        total_size = sum(os.path.getsize(f) for f in file_paths)
-        processed_size = 0
-        found_count = 0
-        duplicate_count = 0
-        start_time = time.time()
-        seen_lines = set()
-        seen_combo = set()
-
-        search_lower = search_phrase.lower()
         import re
-        # Regex na email gdziekolwiek w linii
         email_re = re.compile(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}')
+        # Regex do normalizacji spacji wokół separatorów (eksperymentalny)
+        space_sep_re = re.compile(r'\s*([:;|\t])\s*')
 
         def extract_credentials(line):
-            """Wyciąga login:hasło — regex dla email, od prawej dla user"""
-            # 1) Szukaj emaila regexem w linii
+            """Wyciąga login:hasło - regex dla email, od prawej dla user"""
             m = email_re.search(line)
             if m:
                 email = m.group(0)
                 after = line[m.end():]
-                # Hasło = następny segment (do kolejnego separatora)
+                if strip_spaces:
+                    after = after.lstrip()
                 if after and after[0] in ':;|\t':
-                    rest = after[1:]
-                    # Znajdź koniec hasła (następny separator = domena/site)
-                    end_idx = len(rest)
-                    for sep in ':;|\t':
-                        idx = rest.find(sep)
-                        if idx >= 0 and idx < end_idx:
-                            end_idx = idx
-                    password = rest[:end_idx].strip()
+                    password = after[1:].strip()
                     if password:
                         return email, password, True
 
-            # 2) Fallback: od prawej (dla user:pass bez @)
             for sep in [':', ';', '|', '\t']:
                 idx = line.rfind(sep)
                 if idx > 0:
@@ -165,124 +141,137 @@ class Szukajka:
                     break
             return line, "", False
 
-        def process_line(line_stripped, out_main, out_combo):
-            """Przetwarza jedną linię - zapisuje do plików"""
-            nonlocal found_count, duplicate_count, combo_count
+        # Przygotuj strukturę per fraza
+        single = len(search_phrases) == 1
+        phrases_lower = [(p, p.lower()) for p in search_phrases]
+        results = {}  # phrase -> dict(output, combo, found, combo_count, dupes, out_fh, combo_fh, seen_lines, seen_combo)
 
-            # Plik główny - pełne linie (zawsze)
-            line_lower = line_stripped.lower()
-            if line_stripped and line_lower not in seen_lines:
-                seen_lines.add(line_lower)
-                out_main.write(line_stripped + '\n')
-                found_count += 1
+        for phrase, _ in phrases_lower:
+            safe = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in phrase)
+            if single and output_name:
+                base = output_name
+            elif output_name:
+                base = f"{output_name}_{safe}"
             else:
-                duplicate_count += 1
-                return
+                base = f"wyniki_{safe}"
+            out_path = self.get_unique_filename(output_dir, base_name=base)
+            combo_path = None
+            if format_filter:
+                combo_path = self.get_unique_filename(output_dir, base_name=f"{safe}_combolist")
+            results[phrase] = {
+                "output": out_path, "combo": combo_path,
+                "found": 0, "combo_count": 0, "dupes": 0,
+                "out_fh": None, "combo_fh": None,
+                "seen_lines": set(), "seen_combo": set(),
+            }
 
-            # Combolist - wyciągnij login:hasło (jeśli filtr aktywny)
-            if out_combo and format_filter:
-                login, password, ok = extract_credentials(line_stripped)
+        # Otwórz wszystkie uchwyty
+        for phrase, info in results.items():
+            info["out_fh"] = open(info["output"], 'w', encoding='utf-8', errors='ignore')
+            if info["combo"]:
+                info["combo_fh"] = open(info["combo"], 'w', encoding='utf-8', errors='ignore')
+
+        total_size = sum(os.path.getsize(f) for f in file_paths)
+        processed_size = 0
+        total_found = 0
+        total_dupes = 0
+        start_time = time.time()
+
+        def process_line_for_phrase(phrase, line_stripped):
+            """Przetwarza jedną linię dla konkretnej frazy"""
+            nonlocal total_found, total_dupes
+            info = results[phrase]
+            line_lower = line_stripped.lower()
+            if line_lower in info["seen_lines"]:
+                info["dupes"] += 1
+                total_dupes += 1
+                return
+            info["seen_lines"].add(line_lower)
+            info["out_fh"].write(line_stripped + '\n')
+            info["found"] += 1
+            total_found += 1
+
+            if info["combo_fh"] and format_filter:
+                extraction_line = line_stripped
+                if strip_spaces:
+                    extraction_line = space_sep_re.sub(r'\1', extraction_line)
+                login, password, ok = extract_credentials(extraction_line)
                 if ok and password:
                     has_email = '@' in login and bool(email_re.match(login))
                     if format_filter == "email" and not has_email:
                         return
-                    elif format_filter == "user" and has_email:
+                    if format_filter == "user" and has_email:
                         return
-                    # "both" przepuszcza wszystko
                     combo_line = f"{login}:{password}"
                     combo_lower = combo_line.lower()
-                    if combo_lower not in seen_combo:
-                        seen_combo.add(combo_lower)
-                        out_combo.write(combo_line + '\n')
-                        combo_count += 1
-
-        combo_fh = open(combo_file, 'w', encoding='utf-8', errors='ignore') if combo_file else None
+                    if combo_lower not in info["seen_combo"]:
+                        info["seen_combo"].add(combo_lower)
+                        info["combo_fh"].write(combo_line + '\n')
+                        info["combo_count"] += 1
 
         try:
-            with open(output_file, 'w', encoding='utf-8', errors='ignore') as out:
-                for file_path in file_paths:
-                    if self.stop_flag:
-                        break
+            for file_path in file_paths:
+                if self.stop_flag:
+                    break
+                with open(file_path, 'r', encoding='utf-8', errors='ignore', buffering=self.BUFFER_SIZE) as f:
+                    buffer = ""
+                    while True:
+                        if self.stop_flag:
+                            break
+                        chunk = f.read(self.BUFFER_SIZE)
+                        if not chunk:
+                            break
+                        buffer += chunk
+                        lines = buffer.split('\n')
+                        buffer = lines[-1]
 
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore', buffering=self.BUFFER_SIZE) as f:
-                        buffer = ""
-                        while True:
-                            if self.stop_flag:
-                                break
+                        for line in lines[:-1]:
+                            if not any(sep in line for sep in [':', ';', '|', '\t']):
+                                continue
+                            line_stripped = line.strip()
+                            if not line_stripped:
+                                continue
+                            line_lower = line.lower()
+                            for phrase, p_lower in phrases_lower:
+                                if p_lower in line_lower:
+                                    process_line_for_phrase(phrase, line_stripped)
 
-                            chunk = f.read(self.BUFFER_SIZE)
-                            if not chunk:
-                                break
+                        processed_size += len(chunk.encode('utf-8'))
+                        elapsed = time.time() - start_time
+                        if elapsed > 0:
+                            speed = processed_size / elapsed
+                            remaining = total_size - processed_size
+                            eta = remaining / speed if speed > 0 else 0
+                        else:
+                            speed = 0
+                            eta = 0
+                        progress_callback(processed_size, total_size,
+                                          total_found, total_dupes, speed, eta)
 
-                            buffer += chunk
-                            lines = buffer.split('\n')
-                            buffer = lines[-1]
-
-                            for line in lines[:-1]:
-                                has_separator = any(sep in line for sep in [':', ';', '|', '\t'])
-                                if not has_separator:
-                                    continue
-                                line_stripped = line.strip()
-                                if not line_stripped:
-                                    continue
-
-                                if search_mode == "fraza":
-                                    matched = search_lower in line.lower()
-                                elif search_mode == "email":
-                                    login, password, ok = extract_credentials(line_stripped)
-                                    matched = ok and search_lower in login.lower()
-                                elif search_mode == "haslo":
-                                    login, password, ok = extract_credentials(line_stripped)
-                                    matched = ok and search_lower in password.lower()
-                                else:
-                                    matched = search_lower in line.lower()
-
-                                if matched:
-                                    process_line(line_stripped, out, combo_fh)
-
-                            processed_size += len(chunk.encode('utf-8'))
-
-                            elapsed = time.time() - start_time
-                            if elapsed > 0:
-                                speed = processed_size / elapsed
-                                remaining = total_size - processed_size
-                                eta = remaining / speed if speed > 0 else 0
-                            else:
-                                speed = 0
-                                eta = 0
-
-                            progress_callback(
-                                processed_size, total_size,
-                                found_count, duplicate_count,
-                                speed, eta
-                            )
-
-                        # Reszta bufora
-                        if buffer:
-                            has_separator = any(sep in buffer for sep in [':', ';', '|', '\t'])
-                            if has_separator:
-                                line_stripped = buffer.strip()
-                                if line_stripped:
-                                    if search_mode == "fraza":
-                                        matched = search_lower in buffer.lower()
-                                    elif search_mode == "email":
-                                        login, password, ok = extract_credentials(line_stripped)
-                                        matched = ok and search_lower in login.lower()
-                                    elif search_mode == "haslo":
-                                        login, password, ok = extract_credentials(line_stripped)
-                                        matched = ok and search_lower in password.lower()
-                                    else:
-                                        matched = search_lower in buffer.lower()
-                                    if matched:
-                                        process_line(line_stripped, out, combo_fh)
+                    # Reszta bufora
+                    if buffer and any(sep in buffer for sep in [':', ';', '|', '\t']):
+                        line_stripped = buffer.strip()
+                        if line_stripped:
+                            line_lower = buffer.lower()
+                            for phrase, p_lower in phrases_lower:
+                                if p_lower in line_lower:
+                                    process_line_for_phrase(phrase, line_stripped)
         finally:
-            if combo_fh:
-                combo_fh.close()
+            for info in results.values():
+                if info["out_fh"]:
+                    info["out_fh"].close()
+                if info["combo_fh"]:
+                    info["combo_fh"].close()
+                # Zwolnij sety (oszczędność RAM przy powrocie)
+                info["seen_lines"] = None
+                info["seen_combo"] = None
+                info["out_fh"] = None
+                info["combo_fh"] = None
 
         if self.stop_flag:
-            return None, 0, None, 0
+            return {}
 
-        return output_file, found_count, combo_file, combo_count
+        return results
 
 
 # ===== PALETA KOLORÓW (styl DRM Player) =====
@@ -395,7 +384,7 @@ class ModernEntry(tk.Frame):
 class SzukajkaGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Szukajka Premium v3.1")
+        self.root.title("Szukajka Premium v3.0")
         self.root.geometry("900x870")
         self.root.configure(bg=C["bg"])
         self.root.resizable(True, True)
@@ -473,25 +462,11 @@ class SzukajkaGUI:
 
         entry_box = tk.Frame(search_sec, bg=C["card"])
         entry_box.pack(fill="x", padx=15, pady=(0, 5))
-        self.search_entry = ModernEntry(entry_box, placeholder="np. cda.pl, tb7.pl...")
+        self.search_entry = ModernEntry(entry_box, placeholder="np. helion, ebookpoint, cda.pl (max 10)")
         self.search_entry.pack(fill="x", ipady=8)
 
-        # Tryb wyszukiwania
-        mode_row = tk.Frame(search_sec, bg=C["card"])
-        mode_row.pack(fill="x", padx=15, pady=(0, 3))
-
-        self.search_mode = tk.StringVar(value="fraza")
-        for txt, val, tip in [("Fraza (dowolny tekst)", "fraza", ""),
-                               ("Szukaj po emailu/loginie", "email", ""),
-                               ("Szukaj po haśle", "haslo", "")]:
-            tk.Radiobutton(mode_row, text=txt, variable=self.search_mode, value=val,
-                font=(C["font"], 9), bg=C["card"], fg=C["accent2"],
-                selectcolor=C["input_bg"], activebackground=C["card"],
-                activeforeground=C["accent1"], highlightthickness=0, bd=0,
-                indicatoron=True,
-            ).pack(side="left", padx=(0, 14))
-
-        tk.Label(search_sec, text="Fraza = szuka w całej linii  |  Email = szuka w loginie  |  Hasło = szuka w haśle",
+        tk.Label(search_sec,
+                text="Wiele fraz oddziel przecinkiem  |  Separatory wierszy: :  ;  |  TAB",
                 font=(C["font"], 8), bg=C["card"], fg=C["text_muted"]
         ).pack(fill="x", padx=15, pady=(0, 10))
 
@@ -524,6 +499,7 @@ class SzukajkaGUI:
 
         self.filter_email = tk.BooleanVar(value=False)
         self.filter_user = tk.BooleanVar(value=False)
+        self.strip_spaces = tk.BooleanVar(value=False)
 
         filter_row = tk.Frame(filter_sec, bg=C["card"])
         filter_row.pack(fill="x", padx=15, pady=(0, 5))
@@ -534,6 +510,15 @@ class SzukajkaGUI:
                 selectcolor=C["input_bg"], activebackground=C["card"],
                 activeforeground=C["accent1"], highlightthickness=0, bd=0,
             ).pack(side="left", padx=(0, 20))
+
+        exp_row = tk.Frame(filter_sec, bg=C["card"])
+        exp_row.pack(fill="x", padx=15, pady=(0, 5))
+        tk.Checkbutton(exp_row, text="Ignoruj spacje wokół separatorów (EXP)",
+            variable=self.strip_spaces,
+            font=(C["font"], 9), bg=C["card"], fg=C["accent1"],
+            selectcolor=C["input_bg"], activebackground=C["card"],
+            activeforeground=C["accent2"], highlightthickness=0, bd=0,
+        ).pack(side="left")
 
         tk.Label(filter_sec,
             text="Brak zaznaczenia = tylko pełne linie  |  Zaznaczenie = dodatkowy plik combolist",
@@ -575,7 +560,7 @@ class SzukajkaGUI:
         self.stop_btn.pack(side="left", padx=5)
 
         # Footer
-        tk.Label(main_container, text="MARECKI SYSTEMS  v3.1",
+        tk.Label(main_container, text="MARECKI SYSTEMS  v3.0",
             font=(C["font"], 7), bg=C["bg"], fg="#333333").pack(pady=(5, 10))
 
     def select_file(self):
@@ -601,12 +586,13 @@ class SzukajkaGUI:
             title="Wybierz folder z plikami"
         )
         if folder:
-            # Znajdź WSZYSTKIE pliki w folderze
+            # Rekurencyjnie wszystkie pliki (z podfolderami)
             all_files = []
-            for file in os.listdir(folder):
-                file_path = os.path.join(folder, file)
-                if os.path.isfile(file_path):
-                    all_files.append(file_path)
+            for root, dirs, files in os.walk(folder):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    if os.path.isfile(file_path):
+                        all_files.append(file_path)
 
             if all_files:
                 self.selected_files = all_files
@@ -614,7 +600,7 @@ class SzukajkaGUI:
             else:
                 messagebox.showwarning(
                     "Brak plików",
-                    "W wybranym folderze nie znaleziono żadnych plików"
+                    "W wybranym folderze (i podfolderach) nie znaleziono żadnych plików"
                 )
 
     def select_save_folder(self):
@@ -669,26 +655,32 @@ class SzukajkaGUI:
             )
             return
 
-        search_phrase = self.search_entry.get().strip()
-        if not search_phrase:
-            messagebox.showerror(
-                "Brak frazy",
-                "⚠  Wpisz frazę do wyszukania!"
-            )
+        raw_phrase = self.search_entry.get().strip()
+        if not raw_phrase:
+            messagebox.showerror("Brak frazy", "⚠  Wpisz frazę do wyszukania!")
             return
+
+        # Parsowanie wielu fraz: przecinek jako separator, max 10, deduplikacja
+        phrases = []
+        seen = set()
+        for p in raw_phrase.split(','):
+            p = p.strip()
+            if p and p.lower() not in seen:
+                phrases.append(p)
+                seen.add(p.lower())
+        if not phrases:
+            messagebox.showerror("Brak frazy", "⚠  Wpisz frazę do wyszukania!")
+            return
+        if len(phrases) > 10:
+            messagebox.showwarning("Limit", "Max 10 fraz - biorę pierwsze 10")
+            phrases = phrases[:10]
 
         self.is_searching = True
         self.engine.stop_flag = False
         self.start_time = time.time()
 
-        # Nazwa pliku wynikowego
-        output_name = self.output_name_entry.get().strip()
-        if not output_name:
-            # Domyślna nazwa na bazie frazy wyszukiwania
-            safe_name = "".join(c if c.isalnum() or c in ('_', '-') else '_' for c in search_phrase)
-            output_name = f"wyniki_{safe_name}"
+        output_name = self.output_name_entry.get().strip() or None
 
-        # Filtr formatu: None=pełne linie, "email", "user", "both"
         want_email = self.filter_email.get()
         want_user = self.filter_user.get()
         if want_email and want_user:
@@ -700,35 +692,38 @@ class SzukajkaGUI:
         else:
             format_filter = None
 
+        strip_spaces = self.strip_spaces.get()
+
         def search_thread():
-            output_file, found_count, combo_file, combo_count = self.engine.search_in_files(
-                self.selected_files,
-                search_phrase,
-                self.update_stats,
-                self.save_folder,
-                output_name,
-                format_filter,
-                self.search_mode.get()
+            results = self.engine.search_in_files(
+                self.selected_files, phrases, self.update_stats,
+                self.save_folder, output_name, format_filter, strip_spaces
             )
 
-            # Ustaw pasek na 100% po zakończeniu
             self.progress_bar['value'] = 100
             self.root.update_idletasks()
-
             self.is_searching = False
 
-            if output_file and not self.engine.stop_flag:
+            if results and not self.engine.stop_flag:
                 total_time = self.engine.format_time(time.time() - self.start_time)
-                msg = (
-                    f"Znaleziono {found_count:,} unikalnych wyników!\n\n"
-                    f"Czas: {total_time}\n\n"
-                    f"Pełne linie:\n{output_file}"
-                )
-                if combo_file and combo_count > 0:
-                    msg += (
-                        f"\n\nCombolist ({combo_count:,} wpisów):\n{combo_file}"
-                    )
-                messagebox.showinfo("✓ Skanowanie zakończone!", msg)
+                total_found = sum(r["found"] for r in results.values())
+                total_combo = sum(r["combo_count"] for r in results.values())
+
+                lines = [
+                    f"Fraz przeszukanych: {len(results)}",
+                    f"Łącznie wyników: {total_found:,}",
+                    f"Czas: {total_time}",
+                    "",
+                ]
+                for phrase, info in results.items():
+                    lines.append(f"▸ {phrase}  →  {info['found']:,} linii")
+                    lines.append(f"   {info['output']}")
+                    if info["combo"] and info["combo_count"] > 0:
+                        lines.append(f"   combolist: {info['combo_count']:,}  →  {info['combo']}")
+                if format_filter:
+                    lines.append("")
+                    lines.append(f"Combolisty łącznie: {total_combo:,}")
+                messagebox.showinfo("✓ Skanowanie zakończone!", "\n".join(lines))
 
         threading.Thread(target=search_thread, daemon=True).start()
 
